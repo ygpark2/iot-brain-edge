@@ -1,4 +1,4 @@
-# brain-edget
+# IOT-BRAIN-EDGE
 
 Open-source "Brain" platform that connects sensor hardware (GRF / plantar pressure / 3D scanner) to actionable insights.
 
