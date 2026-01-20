@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package com.walterwalker.brain.v1;
+
+message EventEnvelope {
+  string event_id = 1;
+  string schema_version = 2;     // e.g. "v1"
+  string event_type = 3;         // e.g. "RawFrame", "DeviceConnected"
+  string device_id = 4;
+  string sensor_type = 5;        // e.g. "GRF", "PLANTAR", "SCANNER"
+  string session_id = 6;
+  int64 sensor_timestamp_ms = 7;
+  int64 ingest_timestamp_ms = 8;
+  bytes payload = 9;
+}
