@@ -1,0 +1,139 @@
+version: "3.9"
+
+services:
+  kafka:
+    image: apache/kafka:4.1.1
+    networks:
+      - brain-net
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    environment:
+      # ---- KRaft single-node
+      - KAFKA_PROCESS_ROLES=broker,controller
+      - KAFKA_NODE_ID=1
+      - KAFKA_CONTROLLER_QUORUM_VOTERS=1@kafka:9093
+
+      # ---- Listeners
+      - KAFKA_LISTENERS=PLAINTEXT://0.0.0.0:9092,EXTERNAL://0.0.0.0:9094,CONTROLLER://0.0.0.0:9093
+      - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      - KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT
+      - KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
+
+      # ---- Single-node friendly
+      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
+      - KAFKA_MIN_INSYNC_REPLICAS=1
+
+      # ---- Dev convenience
+      - KAFKA_AUTO_CREATE_TOPICS_ENABLE=false
+      - KAFKA_NUM_PARTITIONS=3
+
+    ports:
+      # External access from host (colima-safe)
+      - target: 9094
+        published: 9094
+        protocol: tcp
+        mode: host
+
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+      placement:
+        constraints:
+          - node.role == manager
+
+  kafka-ui:
+    image: ghcr.io/kafbat/kafka-ui:latest
+    networks:
+      - brain-net
+    ports:
+      - target: 8080
+        published: 8089
+        protocol: tcp
+        mode: host
+    environment:
+      - KAFKA_CLUSTERS_0_NAME=local-swarm
+      - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:9092
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+      placement:
+        constraints:
+          - node.role == manager
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest-alpine
+    networks:
+      - brain-net
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - clickhouse_logs:/var/log/clickhouse-server
+    environment:
+      CLICKHOUSE_DB: brain
+      CLICKHOUSE_USER: brain
+      CLICKHOUSE_PASSWORD: brain
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ports:
+      - target: 8123
+        published: 8123
+        protocol: tcp
+        mode: host
+      - target: 9000
+        published: 9000
+        protocol: tcp
+        mode: host
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+
+  flink-jobmanager:
+    image: flink:latest
+    command: jobmanager
+    networks:
+      - brain-net
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        parallelism.default: 1
+    ports:
+      - target: 8081
+        published: 8081
+        protocol: tcp
+        mode: host
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+
+  flink-taskmanager:
+    image: flink:latest
+    command: taskmanager
+    networks:
+      - brain-net
+    depends_on:
+      - flink-jobmanager
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: 2
+    deploy:
+      replicas: 1
+
+networks:
+  brain-net:
+    external: true
+    # driver: overlay
+    # attachable: true
+
+volumes:
+  kafka-data:
+  clickhouse_data:
+  clickhouse_logs:
+

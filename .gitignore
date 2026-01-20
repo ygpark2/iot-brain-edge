@@ -1,0 +1,29 @@
+# macOS
+.DS_Store
+
+# IntelliJ / Metals
+.idea/
+.metals/
+.bloop/
+project/project/
+project/target/
+target/
+
+# SBT
+.ensime_cache/
+.ensime_lucene/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.env
+
+# Node
+node_modules/
+.next/
+dist/
+
+# Data
+.data/
+
