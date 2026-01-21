@@ -10,9 +10,23 @@ STACK_NAME ?= $(STACK)
 STACK_FILE ?= ./deploy/swarm/stack.yml
 
 # Kafka
-KAFKA_SVC ?= $(STACK)_kafka
+KAFKA_SERVICE ?= $(STACK)_kafka
 KAFKA_BOOTSTRAP_SERVERS ?= localhost:9094
+KAFKA_TOPICS_PRG ?= /opt/kafka/bin/kafka-topics.sh
 TOPIC_RAW ?= rawframes
+TOPIC_RAW_PROCESSED ?= rawframes-processed
+TOPIC_FEATURES ?= session-features
+TOPIC_FEATURES_BASE ?= features-base
+TOPIC_FEATURES_HEALTH ?= features-health
+TOPIC_FEATURES_POWER ?= features-power
+TOPIC_FEATURES_ENV ?= features-env
+TOPIC_FEATURES_DLQ ?= session-features-dlq
+TOPIC_INFERENCE_REQUESTS ?= inference-requests
+TOPIC_INFERENCE_RESULTS ?= inference-results
+TOPIC_INFERENCE_RESULTS_DLQ ?= inference-results-dlq
+TOPIC_INFERENCE_ALERTS ?= inference-alerts
+TOPIC_INFERENCE_ALERTS_DLQ ?= inference-alerts-dlq
+TOPIC_RAW_PROCESSED_DLQ ?= rawframes-processed-dlq
 # 운영 기본값: 파티션은 늘릴 수 있지만 줄이기 어렵다.
 KAFKA_PARTITIONS ?= 3
 # 단일 노드면 1, 브로커 3개면 3
@@ -38,14 +52,16 @@ help:
 	@echo ""
 	@echo "Kafka topics:"
 	@echo "  make topic-create      - create $(TOPIC_RAW)"
+	@echo "  make topics-pipeline   - create pipeline topics"
 	@echo "  make topic-list        - list topics"
 	@echo ""
 	@echo "App (sbt):"
 	@echo "  make sbt-clean"
 	@echo "  make run-ingest"
+	@echo "  make run-alert"
 	@echo "  make run-edge-http     - edge-agent -> HTTP ingest"
 	@echo "  make run-edge-kafka    - edge-agent -> Kafka (after KafkaProducer added)"
-	@echo "  make run-sim           - sensor-sim"
+	@echo "  make run-flink JOB=<name> [FLINK_CONFIG_YAML=path]"
 	@echo ""
 	@echo "One-shot:"
 	@echo "  make dev-http          - swarm up + topic + run ingest + run edge(http)"
@@ -84,7 +100,7 @@ stack-ps:
 # ---------------------- logs ------------------------
 .PHONY: logs-kafka
 logs-kafka:
-	docker service logs -f $(KAFKA_SVC)
+	docker service logs -f $(KAFKA_SERVICE)
 
 # NOTE: service names are prefixed by $(STACK)
 .PHONY: logs-kafka-ui
@@ -118,34 +134,29 @@ clickhouse-ui:
 # (Works on single-node swarm; on multi-node, run on the manager hosting the task.)
 
 define KAFKA_CONTAINER_ID
-$(shell docker ps --filter "name=$(KAFKA_SVC)\.1" --format "{{.ID}}" | head -n 1)
+$(shell docker ps --filter "name=$(KAFKA_SERVICE)\.1" --format "{{.ID}}" | head -n 1)
 endef
 
 .PHONY: topic-create
 topic-create:
 	@if [ -z "$(KAFKA_CONTAINER_ID)" ]; then echo "Kafka container not found. Is the stack up?"; exit 1; fi
-	docker exec -it $(KAFKA_CONTAINER_ID) /opt/kafka/bin/kafka-topics.sh --bootstrap-server $(KAFKA_BOOTSTRAP_SERVERS) --create --if-not-exists --topic $(TOPIC_RAW) --partitions 3 --replication-factor 1
+	docker exec -it $(KAFKA_CONTAINER_ID) $(KAFKA_TOPICS_PRG) --bootstrap-server $(KAFKA_BOOTSTRAP_SERVERS) --create --if-not-exists --topic $(TOPIC_RAW) --partitions 3 --replication-factor 1
 
 .PHONY: topic-list
 topic-list:
 	@if [ -z "$(KAFKA_CONTAINER_ID)" ]; then echo "Kafka container not found. Is the stack up?"; exit 1; fi
-	docker exec -it $(KAFKA_CONTAINER_ID) /opt/kafka/bin/kafka-topics.sh --bootstrap-server $(KAFKA_BOOTSTRAP_SERVERS) --list
-
-# swarm에서 kafka 컨테이너 하나 잡기 (service label로 찾음)
-define KAFKA_CID
-$(shell docker ps -q --filter "label=com.docker.swarm.service.name=$(STACK)_$(KAFKA_SERVICE)" | head -n 1)
-endef
+	docker exec -it $(KAFKA_CONTAINER_ID) $(KAFKA_TOPICS_PRG) --bootstrap-server $(KAFKA_BOOTSTRAP_SERVERS) --list
 
 .PHONY: kafka-wait
 kafka-wait:
-	@cid="$(KAFKA_CID)"; \
+	@cid="$(KAFKA_CONTAINER_ID)"; \
 	if [ -z "$$cid" ]; then \
 	  echo "Kafka container not found. Is the stack up? (STACK=$(STACK) KAFKA_SERVICE=$(KAFKA_SERVICE))"; \
 	  exit 1; \
 	fi; \
 	echo "[kafka-wait] waiting for Kafka (container=$$cid) ..."; \
 	for i in $$(seq 1 60); do \
-	  docker exec -i $$cid bash -lc 'kafka-topics --bootstrap-server $(KAFKA_BOOTSTRAP_SERVERS) --list >/dev/null 2>&1 || /opt/kafka/bin/kafka-topics.sh --bootstrap-server $(KAFKA_BOOTSTRAP_SERVERS) --list >/dev/null 2>&1' && break; \
+	  docker exec -i $$cid bash -lc '$(KAFKA_TOPICS_PRG) --bootstrap-server $(KAFKA_BOOTSTRAP_SERVERS) --list >/dev/null 2>&1 || $(KAFKA_TOPICS_PRG) --bootstrap-server $(KAFKA_BOOTSTRAP_SERVERS) --list >/dev/null 2>&1' && break; \
 	  sleep 1; \
 	  if [ $$i -eq 60 ]; then echo "[kafka-wait] Kafka not ready after 60s"; exit 1; fi; \
 	done; \
@@ -153,33 +164,54 @@ kafka-wait:
 
 .PHONY: kafka-init
 kafka-init: kafka-wait
-	@cid="$(KAFKA_CID)"; \
+	@cid="$(KAFKA_CONTAINER_ID)"; \
 	echo "[kafka-init] creating topics (partitions=$(KAFKA_PARTITIONS), replication=$(KAFKA_REPLICATION)) ..."; \
 	for t in "$(KAFKA_TOPIC)" "$(KAFKA_DLQ_TOPIC)"; do \
 	  echo "[kafka-init] -> $$t"; \
 	  docker exec -i $$cid bash -lc '\
-	    kafka-topics --bootstrap-server $(KAFKA_BOOTSTRAP_SERVERS) \
+	    $(KAFKA_TOPICS_PRG) --bootstrap-server $(KAFKA_BOOTSTRAP_SERVERS) \
 	      --create --if-not-exists --topic '"$$t"' \
 	      --partitions $(KAFKA_PARTITIONS) --replication-factor $(KAFKA_REPLICATION) \
-	    || /opt/kafka/bin/kafka-topics.sh --bootstrap-server $(KAFKA_BOOTSTRAP_SERVERS) \
+	    || $(KAFKA_TOPICS_PRG) --bootstrap-server $(KAFKA_BOOTSTRAP_SERVERS) \
 	      --create --if-not-exists --topic '"$$t"' \
 	      --partitions $(KAFKA_PARTITIONS) --replication-factor $(KAFKA_REPLICATION) \
 	  '; \
 	done; \
 	echo "[kafka-init] done. Listing topics:"; \
 	docker exec -i $$cid bash -lc '\
-	  kafka-topics --bootstrap-server $(KAFKA_BOOTSTRAP_SERVERS) --list \
-	  || /opt/kafka/bin/kafka-topics.sh --bootstrap-server $(KAFKA_BOOTSTRAP_SERVERS) --list \
+	  $(KAFKA_TOPICS_PRG) --bootstrap-server $(KAFKA_BOOTSTRAP_SERVERS) --list \
+	  || $(KAFKA_TOPICS_PRG) --bootstrap-server $(KAFKA_BOOTSTRAP_SERVERS) --list \
+	'
+
+.PHONY: topics-pipeline
+topics-pipeline: kafka-wait
+	@cid="$(KAFKA_CONTAINER_ID)"; \
+	echo "[topics-pipeline] creating pipeline topics ..."; \
+	for t in "$(TOPIC_RAW_PROCESSED)" "$(TOPIC_RAW_PROCESSED_DLQ)" "$(TOPIC_FEATURES)" "$(TOPIC_FEATURES_BASE)" "$(TOPIC_FEATURES_HEALTH)" "$(TOPIC_FEATURES_POWER)" "$(TOPIC_FEATURES_ENV)" "$(TOPIC_FEATURES_DLQ)" "$(TOPIC_INFERENCE_REQUESTS)" "$(TOPIC_INFERENCE_RESULTS)" "$(TOPIC_INFERENCE_RESULTS_DLQ)" "$(TOPIC_INFERENCE_ALERTS)" "$(TOPIC_INFERENCE_ALERTS_DLQ)"; do \
+	  echo "[topics-pipeline] -> $$t"; \
+	  docker exec -i $$cid bash -lc '\
+	    $(KAFKA_TOPICS_PRG) --bootstrap-server $(KAFKA_BOOTSTRAP_SERVERS) \
+	      --create --if-not-exists --topic '"$$t"' \
+	      --partitions $(KAFKA_PARTITIONS) --replication-factor $(KAFKA_REPLICATION) \
+	    || $(KAFKA_TOPICS_PRG) --bootstrap-server $(KAFKA_BOOTSTRAP_SERVERS) \
+	      --create --if-not-exists --topic '"$$t"' \
+	      --partitions $(KAFKA_PARTITIONS) --replication-factor $(KAFKA_REPLICATION) \
+	  '; \
+	done; \
+	echo "[topics-pipeline] done. Listing topics:"; \
+	docker exec -i $$cid bash -lc '\
+	  $(KAFKA_TOPICS_PRG) --bootstrap-server $(KAFKA_BOOTSTRAP_SERVERS) --list \
+	  || $(KAFKA_TOPICS_PRG) --bootstrap-server $(KAFKA_BOOTSTRAP_SERVERS) --list \
 	'
 
 .PHONY: kafka-describe
 kafka-describe: kafka-wait
-	@cid="$(KAFKA_CID)"; \
+	@cid="$(KAFKA_CONTAINER_ID)"; \
 	for t in "$(KAFKA_TOPIC)" "$(KAFKA_DLQ_TOPIC)"; do \
 	  echo "----- $$t -----"; \
 	  docker exec -i $$cid bash -lc '\
-	    kafka-topics --bootstrap-server $(KAFKA_BOOTSTRAP_SERVERS) --describe --topic '"$$t"' \
-	    || /opt/kafka/bin/kafka-topics.sh --bootstrap-server $(KAFKA_BOOTSTRAP_SERVERS) --describe --topic '"$$t"' \
+	    $(KAFKA_TOPICS_PRG) --bootstrap-server $(KAFKA_BOOTSTRAP_SERVERS) --describe --topic '"$$t"' \
+	    || $(KAFKA_TOPICS_PRG) --bootstrap-server $(KAFKA_BOOTSTRAP_SERVERS) --describe --topic '"$$t"' \
 	  '; \
 	done
 
@@ -191,13 +223,13 @@ ch-tail:
 .PHONY: kafka-dlq-tail
 kafka-dlq-tail:
 	@echo "Consume DLQ (rawframes.dlq) ..."
-	@docker exec -it $$(docker ps -q --filter name=kafka | head -n 1) \
+	@docker exec -it $(KAFKA_CONTAINER_ID) \
 	  bash -lc 'kafka-console-consumer --bootstrap-server localhost:9092 --topic rawframes.dlq --from-beginning'
 
 .PHONY: kafka-dlq-consume
 kafka-dlq-consume:
 	@echo "Consuming DLQ messages (rawframes.dlq) ..."
-	@docker exec -it $$(docker ps -q --filter name=kafka | head -n 1) \
+	@docker exec -it $(KAFKA_CONTAINER_ID) \
 	  bash -lc 'kafka-console-consumer --bootstrap-server localhost:9092 --topic rawframes.dlq --from-beginning'
 
 
@@ -221,9 +253,15 @@ run-edge-kafka:
 	@echo "PRODUCER_KIND=kafka KAFKA_BOOTSTRAP_SERVERS=$(KAFKA_BOOTSTRAP_SERVERS) KAFKA_TOPIC=$(KAFKA_TOPIC)"
 	$(SBT) "project edgeAgent" run
 
-.PHONY: run-sim
-run-sim:
-	$(SBT) "run-sim -- --hz 5"
+.PHONY: run-alert
+run-alert:
+	$(SBT) "project alertService" run
+
+.PHONY: run-flink
+run-flink:
+	@if [ -z "$(JOB)" ]; then echo "Usage: make run-flink JOB=<name> [FLINK_CONFIG_YAML=path]"; exit 1; fi
+	@echo "Running Flink job: $(JOB)"
+	FLINK_CONFIG_YAML=$(FLINK_CONFIG_YAML) $(SBT) "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner $(JOB)"
 
 # -------- one-shot helpers --------
 

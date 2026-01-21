@@ -30,10 +30,16 @@ make ch-init
 
 > This step is idempotent and can be safely re-run.
 
-### Run ingestion service
+### Run ingestion service (HTTP → Kafka)
 
 ```bash
 make run-ingest
+```
+
+### Run alert service (Kafka → webhook)
+
+```bash
+make run-alert
 ```
 
 ### Run edge agent (Kafka mode)
@@ -47,6 +53,87 @@ make run-edge-kafka
 ```bash
 make run-edge-http
 ```
+
+## End-to-end test (Kafka → Flink → Kafka → ClickHouse)
+
+> Note: ClickHouse ingestion currently happens via `ingestion-service`.
+
+### 1) Start infra and init schemas
+
+```bash
+make stack-up
+make ch-init
+make kafka-init
+make topics-pipeline
+```
+
+### 2) Run ingestion-service (HTTP ingest only)
+
+```bash
+make run-ingest
+```
+
+### 2b) Run alert-service (alerts → webhook)
+
+```bash
+make run-alert
+```
+
+### 3) Run Flink jobs (JobRunner + spec)
+
+Sessionizer:
+```bash
+sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner sessionizer"
+```
+
+YAML config example:
+```bash
+export FLINK_CONFIG_YAML=./deploy/flink/flink.yml
+sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner sessionizer"
+```
+
+Feature splitters:
+```bash
+sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner feature-base"
+sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner feature-health"
+sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner feature-power"
+sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner feature-env"
+```
+
+Inference trigger:
+```bash
+sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner inference-trigger"
+```
+
+ClickHouse writer:
+```bash
+sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner clickhouse-ingest"
+```
+
+### 4) Run inference-service (Kafka consumer + results/alerts)
+
+```bash
+cd services/inference-service
+pip install -r requirements.txt
+uvicorn main:app --reload --port 8090
+```
+
+### 5) Run edge-agent (Kafka producer)
+
+```bash
+make run-edge-kafka
+```
+
+### 6) Verify data in ClickHouse
+
+```bash
+curl -s "http://localhost:8123/?query=SELECT%20count()%20FROM%20brain.rawframes" && echo
+curl -s "http://localhost:8123/?query=SELECT%20count()%20FROM%20brain.session_features" && echo
+curl -s "http://localhost:8123/?query=SELECT%20count()%20FROM%20brain.inference_results" && echo
+curl -s "http://localhost:8123/?query=SELECT%20count()%20FROM%20brain.inference_alerts" && echo
+```
+
+If counts increase, the flow is working end-to-end.
 
 ### View logs
 
