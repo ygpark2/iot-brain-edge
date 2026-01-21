@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package com.walterwalker.brain.v1;
+package com.ainsoft.brain.v1;
 
 message EventEnvelope {
   string event_id = 1;

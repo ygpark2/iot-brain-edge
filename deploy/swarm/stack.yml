@@ -100,7 +100,7 @@ services:
     environment:
       FLINK_PROPERTIES: |
         jobmanager.rpc.address: flink-jobmanager
-        parallelism.default: 1
+        parallelism.default: 2
     ports:
       - target: 8081
         published: 8081
@@ -122,7 +122,7 @@ services:
     environment:
       FLINK_PROPERTIES: |
         jobmanager.rpc.address: flink-jobmanager
-        taskmanager.numberOfTaskSlots: 2
+        taskmanager.numberOfTaskSlots: 5
     deploy:
       replicas: 1
 

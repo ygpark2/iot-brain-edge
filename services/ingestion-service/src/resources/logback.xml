@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+
+    <!-- ========================= -->
+    <!-- Console Appender -->
+    <!-- ========================= -->
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>
+                %d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n
+            </pattern>
+        </encoder>
+    </appender>
+
+    <!-- ========================= -->
+    <!-- Application logs -->
+    <!-- ========================= -->
+    <!-- 네 코드 패키지 -->
+    <logger name="com.walterwalker" level="INFO"/>
+
+    <!-- ========================= -->
+    <!-- Kafka / Pekko noise control -->
+    <!-- ========================= -->
+
+    <!-- Kafka 내부 메트릭/텔레메트리 폭발의 주범 -->
+    <logger name="org.apache.kafka.common.telemetry" level="WARN"/>
+    <logger name="org.apache.kafka.common.metrics" level="WARN"/>
+
+    <!-- Kafka 클라이언트 -->
+    <logger name="org.apache.kafka.clients" level="INFO"/>
+    <logger name="org.apache.kafka" level="WARN"/>
+
+    <!-- Pekko Kafka -->
+    <logger name="org.apache.pekko.kafka" level="INFO"/>
+
+    <!-- Pekko core -->
+    <logger name="org.apache.pekko" level="INFO"/>
+
+    <!-- ========================= -->
+    <!-- Root -->
+    <!-- ========================= -->
+    <root level="INFO">
+        <appender-ref ref="STDOUT"/>
+    </root>
+
+</configuration>
