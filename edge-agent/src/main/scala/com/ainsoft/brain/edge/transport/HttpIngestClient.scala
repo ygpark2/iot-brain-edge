@@ -31,12 +31,13 @@ object HttpIngestClient:
       ((1000.0 / math.max(1, cfg.hz)).toLong).millis
 
     // POST flow with backoff retry (network errors / server down)
-    val postFlow: Flow[String, StatusCode, _] =
+    val postFlow: Flow[String, StatusCode, ?] =
       RestartFlow.withBackoff(
-        minBackoff = 200.millis,
-        maxBackoff = 3.seconds,
-        randomFactor = 0.2,
-        maxRestarts = -1
+        settings = org.apache.pekko.stream.RestartSettings(
+          minBackoff = 200.millis,
+          maxBackoff = 3.seconds,
+          randomFactor = 0.2
+        ).withMaxRestarts(-1, 200.millis)
       ) { () =>
         Flow[String].mapAsync(4) { json =>
           postJson(http, cfg.url, json).recover { case ex =>

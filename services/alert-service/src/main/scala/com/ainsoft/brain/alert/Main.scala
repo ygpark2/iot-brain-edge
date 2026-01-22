@@ -2,14 +2,19 @@ package com.ainsoft.brain.alert
 
 import com.ainsoft.brain.core.events.{EventJsonProtocol, InferenceAlert}
 import com.ainsoft.brain.core.kafka.PekkoKafkaSupport
+
 import org.apache.pekko.actor.typed.ActorSystem
 import org.apache.pekko.http.scaladsl.Http
 import org.apache.pekko.kafka.ConsumerSettings
 import org.apache.pekko.kafka.ConsumerMessage
 import org.apache.pekko.stream.{OverflowStrategy, UniqueKillSwitch}
 import org.apache.kafka.common.serialization.StringDeserializer
+import org.apache.pekko.Done
+import org.apache.pekko.kafka.scaladsl.Producer
+import org.apache.pekko.stream.scaladsl.Source
 import spray.json.*
 
+import scala.concurrent.Future
 import scala.concurrent.duration.*
 import scala.concurrent.{ExecutionContext, Future}
 import scala.util.{Failure, Success}
@@ -122,7 +127,7 @@ object Main {
         val alert = raw.parseJson.convertTo[InferenceAlert](using EventJsonProtocol.alertFormat)
 
         postWebhook(alert).flatMap { _ =>
-          msg.committableOffset.commitScaladsl().map(_ => ())
+          Future.successful(msg.committableOffset)
         }.recoverWith { case e =>
           val t = msg.record.topic()
           val p = msg.record.partition()
@@ -131,11 +136,11 @@ object Main {
           if (PekkoKafkaSupport.isPermanentHttpError(e)) {
             val rec = PekkoKafkaSupport.dlqRecord(raw, e, t, p, o, cfg.dlqTopic)
             val dlqProducer = PekkoKafkaSupport.dlqProducer(system, cfg.bootstrapServers)
-            org.apache.pekko.kafka.scaladsl.Producer.plainSink(dlqProducer).runWith(
-              org.apache.pekko.stream.scaladsl.Source.single(rec)
-            ).flatMap(_ => msg.committableOffset.commitScaladsl()).map(_ => ())
+            val sentF: Future[Done] = Source.single(rec).runWith(Producer.plainSink(dlqProducer))
+
+            sentF.map(_ => msg.committableOffset)
           } else {
-            PekkoKafkaSupport.delayFail[Unit](system, 1.second, e)
+            PekkoKafkaSupport.delayFail[ConsumerMessage.CommittableOffset](system, 1.second, e)
           }
         }
       }

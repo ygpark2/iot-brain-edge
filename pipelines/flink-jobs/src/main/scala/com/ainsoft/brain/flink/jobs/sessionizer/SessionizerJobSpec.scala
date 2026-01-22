@@ -1,10 +1,14 @@
 package com.ainsoft.brain.flink.jobs.sessionizer
 
 import com.ainsoft.brain.flink.io.{EnvelopeDeserializer, FeatureSerializer, RawEventSerializer}
-import com.ainsoft.brain.flink.model.{FeatureEvent, ParsedEnvelope, RawEventRecord}
+import com.ainsoft.brain.core.events.{FeatureEvent, RawEventRecord}
+import com.ainsoft.brain.flink.model.ParsedEnvelope
 import com.ainsoft.brain.flink.util.{Env, PayloadStats, SessionAggregate}
 import com.ainsoft.brain.flink.jobs.JobSpec
 import org.apache.flink.api.common.eventtime.{SerializableTimestampAssigner, WatermarkStrategy}
+import org.apache.flink.api.common.functions.{FilterFunction, MapFunction}
+import org.apache.flink.api.common.typeinfo.TypeInformation
+import org.apache.flink.api.java.functions.KeySelector
 import org.apache.flink.connector.kafka.source.KafkaSource
 import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer
 import org.apache.flink.connector.kafka.sink.{KafkaRecordSerializationSchema, KafkaSink}
@@ -18,7 +22,9 @@ import java.time.Duration
 final class SessionizerProcessFunction(idleGapMs: Long)
   extends KeyedProcessFunction[String, ParsedEnvelope, FeatureEvent] {
 
-  @transient private var state: SessionAggregate = _
+  import scala.compiletime.uninitialized
+
+  @transient private var state: SessionAggregate = uninitialized
 
   override def processElement(
     value: ParsedEnvelope,
@@ -130,25 +136,33 @@ object SessionizerJobSpec extends JobSpec {
     val parsed = env
       .fromSource(source, watermark, "kafka-source")
       .name("kafka-source")
-      .filter(_.eventType == "RawFrame")
+      .filter(new FilterFunction[ParsedEnvelope] {
+        override def filter(value: ParsedEnvelope): Boolean = value.eventType == "RawFrame"
+      })
 
-    val rawRecords = parsed.map { env =>
-      val payloadB64 = java.util.Base64.getEncoder.encodeToString(env.payload)
-      RawEventRecord(
-        eventId = env.eventId,
-        schemaVersion = env.schemaVersion,
-        eventType = env.eventType,
-        deviceId = env.deviceId,
-        sensorType = env.sensorType,
-        sessionId = env.sessionId,
-        sensorTimestampMs = env.sensorTimestampMs,
-        ingestTimestampMs = env.ingestTimestampMs,
-        payloadB64 = payloadB64
-      )
-    }
+    val rawRecords = parsed
+      .map(new MapFunction[ParsedEnvelope, RawEventRecord] {
+        override def map(value: ParsedEnvelope): RawEventRecord = {
+          val payloadB64 = java.util.Base64.getEncoder.encodeToString(value.payload)
+          RawEventRecord(
+            eventId = value.eventId,
+            schemaVersion = value.schemaVersion,
+            eventType = value.eventType,
+            deviceId = value.deviceId,
+            sensorType = value.sensorType,
+            sessionId = value.sessionId,
+            sensorTimestampMs = value.sensorTimestampMs,
+            ingestTimestampMs = value.ingestTimestampMs,
+            payloadB64 = payloadB64
+          )
+        }
+      })
+      .returns(TypeInformation.of(classOf[RawEventRecord]))
 
     val features = parsed
-      .keyBy(e => s"${e.deviceId}:${e.sessionId}:${e.sensorType}")
+      .keyBy(new KeySelector[ParsedEnvelope, String] {
+        override def getKey(value: ParsedEnvelope): String = s"${value.deviceId}:${value.sessionId}:${value.sensorType}"
+      })
       .process(new SessionizerProcessFunction(idleGapMs))
       .name("sessionizer")
 

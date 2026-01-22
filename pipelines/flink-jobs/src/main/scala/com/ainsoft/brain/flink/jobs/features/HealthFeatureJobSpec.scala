@@ -1,9 +1,10 @@
 package com.ainsoft.brain.flink.jobs.features
 
 import com.ainsoft.brain.flink.io.{FeatureDeserializer, FeatureSerializer}
-import com.ainsoft.brain.flink.model.FeatureEvent
+import com.ainsoft.brain.core.events.FeatureEvent
 import com.ainsoft.brain.flink.jobs.JobSpec
 import com.ainsoft.brain.flink.util.Env
+import org.apache.flink.api.common.functions.FilterFunction
 import org.apache.flink.connector.kafka.source.KafkaSource
 import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer
 import org.apache.flink.connector.kafka.sink.{KafkaRecordSerializationSchema, KafkaSink}
@@ -30,7 +31,10 @@ object HealthFeatureJobSpec extends JobSpec {
 
     val filtered = env
       .fromSource(source, org.apache.flink.api.common.eventtime.WatermarkStrategy.noWatermarks(), "feature-source")
-      .filter(f => f.sensorType == "GRF" || f.sensorType == "PLANTAR" || f.sensorType == "SCANNER")
+      .filter(new FilterFunction[FeatureEvent] {
+        override def filter(value: FeatureEvent): Boolean =
+          value.sensorType == "GRF" || value.sensorType == "PLANTAR" || value.sensorType == "SCANNER"
+      })
 
     val sink = KafkaSink.builder[FeatureEvent]()
       .setBootstrapServers(bootstrapServers)

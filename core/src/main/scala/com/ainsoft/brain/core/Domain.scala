@@ -8,6 +8,14 @@ object SensorType {
   case object GRF extends SensorType { val name = "GRF" }
   case object PLANTAR extends SensorType { val name = "PLANTAR" }
   case object SCANNER extends SensorType { val name = "SCANNER" }
+  case object VOLT extends SensorType { val name = "VOLT" }
+  case object AMP extends SensorType { val name = "AMP" }
+  case object WATT extends SensorType { val name = "WATT" }
+  case object KWH extends SensorType { val name = "KWH" }
+  case object TEMP extends SensorType { val name = "TEMP" }
+  case object HUMID extends SensorType { val name = "HUMID" }
+  case object CO2 extends SensorType { val name = "CO2" }
+  case object PM25 extends SensorType { val name = "PM25" }
 }
 
 sealed trait BrainEvent { def deviceId: DeviceId; def sessionId: SessionId; def atMs: Long }
