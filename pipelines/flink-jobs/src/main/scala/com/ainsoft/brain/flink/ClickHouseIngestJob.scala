@@ -1,15 +1,15 @@
 package com.ainsoft.brain.flink.jobs.clickhouse
 
-import com.ainsoft.brain.flink.io.{JsonDeserializer, JsonProtocol}
-import com.ainsoft.brain.flink.model.{InferenceAlert, InferenceResult, RawEventRecord, SessionFeature}
+import com.ainsoft.brain.flink.io.JsonDeserializer
+import com.ainsoft.brain.core.events.EventJsonProtocol
+import com.ainsoft.brain.core.events.{InferenceAlert, InferenceResult, RawEventRecord, SessionFeature}
 import com.ainsoft.brain.flink.util.Env
 import org.apache.flink.api.common.eventtime.WatermarkStrategy
 import org.apache.flink.api.common.typeinfo.TypeInformation
 import org.apache.flink.connector.kafka.source.KafkaSource
 import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment
-import org.apache.flink.streaming.api.functions.sink.{RichSinkFunction, SinkFunction}
-import org.apache.flink.configuration.Configuration
+import org.apache.flink.api.connector.sink2.{Sink, SinkWriter, WriterInitContext}
 import spray.json.*
 
 import java.net.URLEncoder
@@ -23,18 +23,36 @@ final class ClickHouseSink[
   httpUrl: String,
   user: Option[String],
   password: Option[String]
-) extends RichSinkFunction[T] {
+) extends Sink[T] {
+  override def createWriter(context: WriterInitContext): SinkWriter[T] =
+    new ClickHouseSinkWriter(insertQuery, toJsonLine, httpUrl, user, password)
+}
 
-  @transient private var http: java.net.http.HttpClient = _
-  @transient private var endpoint: String = _
+final class ClickHouseSinkWriter[
+  T
+](
+  insertQuery: String,
+  toJsonLine: T => String,
+  httpUrl: String,
+  user: Option[String],
+  password: Option[String]
+) extends SinkWriter[T] {
 
-  override def open(parameters: Configuration): Unit = {
-    http = java.net.http.HttpClient.newHttpClient()
-    val encoded = URLEncoder.encode(insertQuery, StandardCharsets.UTF_8)
-    endpoint = s"${httpUrl}/?query=${encoded}"
+  import scala.compiletime.uninitialized
+
+  @transient private var http: java.net.http.HttpClient = uninitialized
+  @transient private var endpoint: String = uninitialized
+
+  private def init(): Unit = {
+    if (http == null) {
+      http = java.net.http.HttpClient.newHttpClient()
+      val encoded = URLEncoder.encode(insertQuery, StandardCharsets.UTF_8)
+      endpoint = s"${httpUrl}/?query=${encoded}"
+    }
   }
 
-  override def invoke(value: T, context: SinkFunction.Context): Unit = {
+  override def write(value: T, context: SinkWriter.Context): Unit = {
+    init()
     val line = toJsonLine(value)
     val body = java.net.http.HttpRequest.BodyPublishers.ofString(line + "\n")
     val builder = java.net.http.HttpRequest.newBuilder()
@@ -54,38 +72,42 @@ final class ClickHouseSink[
       throw new RuntimeException(s"ClickHouse HTTP ${resp.statusCode()} body=${resp.body()}")
     }
   }
+
+  override def flush(endOfInput: Boolean): Unit = {}
+
+  override def close(): Unit = {}
 }
 
 object ClickHouseIngestJobSpec extends com.ainsoft.brain.flink.jobs.JobSpec {
   override val name: String = "clickhouse-ingest"
 
   override def register(env: org.apache.flink.streaming.api.environment.StreamExecutionEnvironment): Unit = {
-    val bootstrapServers = env("CH_KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
-    val rawTopic = env("CH_RAW_TOPIC", "rawframes-processed")
-    val featureTopic = env("CH_FEATURE_TOPIC", "session-features")
-    val featureHealthTopic = env("CH_FEATURE_HEALTH_TOPIC", "features-health")
-    val featurePowerTopic = env("CH_FEATURE_POWER_TOPIC", "features-power")
-    val featureEnvTopic = env("CH_FEATURE_ENV_TOPIC", "features-env")
-    val featureBaseTopic = env("CH_FEATURE_BASE_TOPIC", "features-base")
-    val resultTopic = env("CH_RESULT_TOPIC", "inference-results")
-    val alertTopic = env("CH_ALERT_TOPIC", "inference-alerts")
-    val groupId = env("CH_GROUP_ID", "flink-clickhouse-writer")
+    val bootstrapServers = Env.get("CH_KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+    val rawTopic = Env.get("CH_RAW_TOPIC", "rawframes-processed")
+    val featureTopic = Env.get("CH_FEATURE_TOPIC", "session-features")
+    val featureHealthTopic = Env.get("CH_FEATURE_HEALTH_TOPIC", "features-health")
+    val featurePowerTopic = Env.get("CH_FEATURE_POWER_TOPIC", "features-power")
+    val featureEnvTopic = Env.get("CH_FEATURE_ENV_TOPIC", "features-env")
+    val featureBaseTopic = Env.get("CH_FEATURE_BASE_TOPIC", "features-base")
+    val resultTopic = Env.get("CH_RESULT_TOPIC", "inference-results")
+    val alertTopic = Env.get("CH_ALERT_TOPIC", "inference-alerts")
+    val groupId = Env.get("CH_GROUP_ID", "flink-clickhouse-writer")
 
-    val httpUrl = env("CH_HTTP_URL", "http://localhost:8123")
-    val db = env("CH_DB", "brain")
-    val rawTable = env("CH_RAW_TABLE", "rawframes")
-    val featureTable = env("CH_FEATURE_TABLE", "session_features")
-    val resultTable = env("CH_RESULT_TABLE", "inference_results")
-    val alertTable = env("CH_ALERT_TABLE", "inference_alerts")
-    val user = envOpt("CH_USER")
-    val password = envOpt("CH_PASSWORD")
+    val httpUrl = Env.get("CH_HTTP_URL", "http://localhost:8123")
+    val db = Env.get("CH_DB", "brain")
+    val rawTable = Env.get("CH_RAW_TABLE", "rawframes")
+    val featureTable = Env.get("CH_FEATURE_TABLE", "session_features")
+    val resultTable = Env.get("CH_RESULT_TABLE", "inference_results")
+    val alertTable = Env.get("CH_ALERT_TABLE", "inference_alerts")
+    val user = Env.getOpt("CH_USER")
+    val password = Env.getOpt("CH_PASSWORD")
 
     val rawSource = KafkaSource.builder[RawEventRecord]()
       .setBootstrapServers(bootstrapServers)
       .setTopics(rawTopic)
       .setGroupId(groupId + "-raw")
       .setStartingOffsets(OffsetsInitializer.earliest())
-      .setValueOnlyDeserializer(new JsonDeserializer[RawEventRecord](using JsonProtocol.rawFormat, TypeInformation.of(classOf[RawEventRecord])))
+      .setValueOnlyDeserializer(new JsonDeserializer[RawEventRecord](using EventJsonProtocol.rawRecordFormat, TypeInformation.of(classOf[RawEventRecord])))
       .build()
 
     val featureSource = KafkaSource.builder[SessionFeature]()
@@ -93,7 +115,7 @@ object ClickHouseIngestJobSpec extends com.ainsoft.brain.flink.jobs.JobSpec {
       .setTopics(featureTopic)
       .setGroupId(groupId + "-features")
       .setStartingOffsets(OffsetsInitializer.earliest())
-      .setValueOnlyDeserializer(new JsonDeserializer[SessionFeature](using JsonProtocol.featureFormat, TypeInformation.of(classOf[SessionFeature])))
+      .setValueOnlyDeserializer(new JsonDeserializer[SessionFeature](using EventJsonProtocol.sessionFeatureFormat, TypeInformation.of(classOf[SessionFeature])))
       .build()
 
     val featureHealthSource = KafkaSource.builder[SessionFeature]()
@@ -101,7 +123,7 @@ object ClickHouseIngestJobSpec extends com.ainsoft.brain.flink.jobs.JobSpec {
       .setTopics(featureHealthTopic)
       .setGroupId(groupId + "-features-health")
       .setStartingOffsets(OffsetsInitializer.earliest())
-      .setValueOnlyDeserializer(new JsonDeserializer[SessionFeature](using JsonProtocol.featureFormat, TypeInformation.of(classOf[SessionFeature])))
+      .setValueOnlyDeserializer(new JsonDeserializer[SessionFeature](using EventJsonProtocol.sessionFeatureFormat, TypeInformation.of(classOf[SessionFeature])))
       .build()
 
     val featurePowerSource = KafkaSource.builder[SessionFeature]()
@@ -109,7 +131,7 @@ object ClickHouseIngestJobSpec extends com.ainsoft.brain.flink.jobs.JobSpec {
       .setTopics(featurePowerTopic)
       .setGroupId(groupId + "-features-power")
       .setStartingOffsets(OffsetsInitializer.earliest())
-      .setValueOnlyDeserializer(new JsonDeserializer[SessionFeature](using JsonProtocol.featureFormat, TypeInformation.of(classOf[SessionFeature])))
+      .setValueOnlyDeserializer(new JsonDeserializer[SessionFeature](using EventJsonProtocol.sessionFeatureFormat, TypeInformation.of(classOf[SessionFeature])))
       .build()
 
     val featureEnvSource = KafkaSource.builder[SessionFeature]()
@@ -117,7 +139,7 @@ object ClickHouseIngestJobSpec extends com.ainsoft.brain.flink.jobs.JobSpec {
       .setTopics(featureEnvTopic)
       .setGroupId(groupId + "-features-env")
       .setStartingOffsets(OffsetsInitializer.earliest())
-      .setValueOnlyDeserializer(new JsonDeserializer[SessionFeature](using JsonProtocol.featureFormat, TypeInformation.of(classOf[SessionFeature])))
+      .setValueOnlyDeserializer(new JsonDeserializer[SessionFeature](using EventJsonProtocol.sessionFeatureFormat, TypeInformation.of(classOf[SessionFeature])))
       .build()
 
     val featureBaseSource = KafkaSource.builder[SessionFeature]()
@@ -125,7 +147,7 @@ object ClickHouseIngestJobSpec extends com.ainsoft.brain.flink.jobs.JobSpec {
       .setTopics(featureBaseTopic)
       .setGroupId(groupId + "-features-base")
       .setStartingOffsets(OffsetsInitializer.earliest())
-      .setValueOnlyDeserializer(new JsonDeserializer[SessionFeature](using JsonProtocol.featureFormat, TypeInformation.of(classOf[SessionFeature])))
+      .setValueOnlyDeserializer(new JsonDeserializer[SessionFeature](using EventJsonProtocol.sessionFeatureFormat, TypeInformation.of(classOf[SessionFeature])))
       .build()
 
     val resultSource = KafkaSource.builder[InferenceResult]()
@@ -133,7 +155,7 @@ object ClickHouseIngestJobSpec extends com.ainsoft.brain.flink.jobs.JobSpec {
       .setTopics(resultTopic)
       .setGroupId(groupId + "-results")
       .setStartingOffsets(OffsetsInitializer.earliest())
-      .setValueOnlyDeserializer(new JsonDeserializer[InferenceResult](using JsonProtocol.resultFormat, TypeInformation.of(classOf[InferenceResult])))
+      .setValueOnlyDeserializer(new JsonDeserializer[InferenceResult](using EventJsonProtocol.resultFormat, TypeInformation.of(classOf[InferenceResult])))
       .build()
 
     val alertSource = KafkaSource.builder[InferenceAlert]()
@@ -141,7 +163,7 @@ object ClickHouseIngestJobSpec extends com.ainsoft.brain.flink.jobs.JobSpec {
       .setTopics(alertTopic)
       .setGroupId(groupId + "-alerts")
       .setStartingOffsets(OffsetsInitializer.earliest())
-      .setValueOnlyDeserializer(new JsonDeserializer[InferenceAlert](using JsonProtocol.alertFormat, TypeInformation.of(classOf[InferenceAlert])))
+      .setValueOnlyDeserializer(new JsonDeserializer[InferenceAlert](using EventJsonProtocol.alertFormat, TypeInformation.of(classOf[InferenceAlert])))
       .build()
 
     val rawSink = new ClickHouseSink[RawEventRecord](
@@ -232,7 +254,6 @@ object ClickHouseIngestJobSpec extends com.ainsoft.brain.flink.jobs.JobSpec {
     env.fromSource(resultSource, WatermarkStrategy.noWatermarks(), "result-source").sinkTo(resultSink).name("result-sink")
     env.fromSource(alertSource, WatermarkStrategy.noWatermarks(), "alert-source").sinkTo(alertSink).name("alert-sink")
   }
-}
 
   private def env(name: String, default: String): String =
     Env.get(name, default)
@@ -241,25 +262,25 @@ object ClickHouseIngestJobSpec extends com.ainsoft.brain.flink.jobs.JobSpec {
     Env.getOpt(name)
 
   def main(args: Array[String]): Unit = {
-    val bootstrapServers = env("CH_KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
-    val rawTopic = env("CH_RAW_TOPIC", "rawframes-processed")
-    val featureTopic = env("CH_FEATURE_TOPIC", "session-features")
-    val featureHealthTopic = env("CH_FEATURE_HEALTH_TOPIC", "features-health")
-    val featurePowerTopic = env("CH_FEATURE_POWER_TOPIC", "features-power")
-    val featureEnvTopic = env("CH_FEATURE_ENV_TOPIC", "features-env")
-    val featureBaseTopic = env("CH_FEATURE_BASE_TOPIC", "features-base")
-    val resultTopic = env("CH_RESULT_TOPIC", "inference-results")
-    val alertTopic = env("CH_ALERT_TOPIC", "inference-alerts")
-    val groupId = env("CH_GROUP_ID", "flink-clickhouse-writer")
+    val bootstrapServers = Env.get("CH_KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+    val rawTopic = Env.get("CH_RAW_TOPIC", "rawframes-processed")
+    val featureTopic = Env.get("CH_FEATURE_TOPIC", "session-features")
+    val featureHealthTopic = Env.get("CH_FEATURE_HEALTH_TOPIC", "features-health")
+    val featurePowerTopic = Env.get("CH_FEATURE_POWER_TOPIC", "features-power")
+    val featureEnvTopic = Env.get("CH_FEATURE_ENV_TOPIC", "features-env")
+    val featureBaseTopic = Env.get("CH_FEATURE_BASE_TOPIC", "features-base")
+    val resultTopic = Env.get("CH_RESULT_TOPIC", "inference-results")
+    val alertTopic = Env.get("CH_ALERT_TOPIC", "inference-alerts")
+    val groupId = Env.get("CH_GROUP_ID", "flink-clickhouse-writer")
 
-    val httpUrl = env("CH_HTTP_URL", "http://localhost:8123")
-    val db = env("CH_DB", "brain")
-    val rawTable = env("CH_RAW_TABLE", "rawframes")
-    val featureTable = env("CH_FEATURE_TABLE", "session_features")
-    val resultTable = env("CH_RESULT_TABLE", "inference_results")
-    val alertTable = env("CH_ALERT_TABLE", "inference_alerts")
-    val user = envOpt("CH_USER")
-    val password = envOpt("CH_PASSWORD")
+    val httpUrl = Env.get("CH_HTTP_URL", "http://localhost:8123")
+    val db = Env.get("CH_DB", "brain")
+    val rawTable = Env.get("CH_RAW_TABLE", "rawframes")
+    val featureTable = Env.get("CH_FEATURE_TABLE", "session_features")
+    val resultTable = Env.get("CH_RESULT_TABLE", "inference_results")
+    val alertTable = Env.get("CH_ALERT_TABLE", "inference_alerts")
+    val user = Env.getOpt("CH_USER")
+    val password = Env.getOpt("CH_PASSWORD")
 
     val env = StreamExecutionEnvironment.getExecutionEnvironment
 
@@ -268,7 +289,7 @@ object ClickHouseIngestJobSpec extends com.ainsoft.brain.flink.jobs.JobSpec {
       .setTopics(rawTopic)
       .setGroupId(groupId + "-raw")
       .setStartingOffsets(OffsetsInitializer.earliest())
-      .setValueOnlyDeserializer(new JsonDeserializer[RawEventRecord](using JsonProtocol.rawFormat, TypeInformation.of(classOf[RawEventRecord])))
+      .setValueOnlyDeserializer(new JsonDeserializer[RawEventRecord](using EventJsonProtocol.rawRecordFormat, TypeInformation.of(classOf[RawEventRecord])))
       .build()
 
     val featureSource = KafkaSource.builder[SessionFeature]()
@@ -276,7 +297,7 @@ object ClickHouseIngestJobSpec extends com.ainsoft.brain.flink.jobs.JobSpec {
       .setTopics(featureTopic)
       .setGroupId(groupId + "-features")
       .setStartingOffsets(OffsetsInitializer.earliest())
-      .setValueOnlyDeserializer(new JsonDeserializer[SessionFeature](using JsonProtocol.featureFormat, TypeInformation.of(classOf[SessionFeature])))
+      .setValueOnlyDeserializer(new JsonDeserializer[SessionFeature](using EventJsonProtocol.sessionFeatureFormat, TypeInformation.of(classOf[SessionFeature])))
       .build()
 
     val featureHealthSource = KafkaSource.builder[SessionFeature]()
@@ -284,7 +305,7 @@ object ClickHouseIngestJobSpec extends com.ainsoft.brain.flink.jobs.JobSpec {
       .setTopics(featureHealthTopic)
       .setGroupId(groupId + "-features-health")
       .setStartingOffsets(OffsetsInitializer.earliest())
-      .setValueOnlyDeserializer(new JsonDeserializer[SessionFeature](using JsonProtocol.featureFormat, TypeInformation.of(classOf[SessionFeature])))
+      .setValueOnlyDeserializer(new JsonDeserializer[SessionFeature](using EventJsonProtocol.sessionFeatureFormat, TypeInformation.of(classOf[SessionFeature])))
       .build()
 
     val featurePowerSource = KafkaSource.builder[SessionFeature]()
@@ -292,7 +313,7 @@ object ClickHouseIngestJobSpec extends com.ainsoft.brain.flink.jobs.JobSpec {
       .setTopics(featurePowerTopic)
       .setGroupId(groupId + "-features-power")
       .setStartingOffsets(OffsetsInitializer.earliest())
-      .setValueOnlyDeserializer(new JsonDeserializer[SessionFeature](using JsonProtocol.featureFormat, TypeInformation.of(classOf[SessionFeature])))
+      .setValueOnlyDeserializer(new JsonDeserializer[SessionFeature](using EventJsonProtocol.sessionFeatureFormat, TypeInformation.of(classOf[SessionFeature])))
       .build()
 
     val featureEnvSource = KafkaSource.builder[SessionFeature]()
@@ -300,7 +321,7 @@ object ClickHouseIngestJobSpec extends com.ainsoft.brain.flink.jobs.JobSpec {
       .setTopics(featureEnvTopic)
       .setGroupId(groupId + "-features-env")
       .setStartingOffsets(OffsetsInitializer.earliest())
-      .setValueOnlyDeserializer(new JsonDeserializer[SessionFeature](using JsonProtocol.featureFormat, TypeInformation.of(classOf[SessionFeature])))
+      .setValueOnlyDeserializer(new JsonDeserializer[SessionFeature](using EventJsonProtocol.sessionFeatureFormat, TypeInformation.of(classOf[SessionFeature])))
       .build()
 
     val featureBaseSource = KafkaSource.builder[SessionFeature]()
@@ -308,7 +329,7 @@ object ClickHouseIngestJobSpec extends com.ainsoft.brain.flink.jobs.JobSpec {
       .setTopics(featureBaseTopic)
       .setGroupId(groupId + "-features-base")
       .setStartingOffsets(OffsetsInitializer.earliest())
-      .setValueOnlyDeserializer(new JsonDeserializer[SessionFeature](using JsonProtocol.featureFormat, TypeInformation.of(classOf[SessionFeature])))
+      .setValueOnlyDeserializer(new JsonDeserializer[SessionFeature](using EventJsonProtocol.sessionFeatureFormat, TypeInformation.of(classOf[SessionFeature])))
       .build()
 
     val resultSource = KafkaSource.builder[InferenceResult]()
@@ -316,7 +337,7 @@ object ClickHouseIngestJobSpec extends com.ainsoft.brain.flink.jobs.JobSpec {
       .setTopics(resultTopic)
       .setGroupId(groupId + "-results")
       .setStartingOffsets(OffsetsInitializer.earliest())
-      .setValueOnlyDeserializer(new JsonDeserializer[InferenceResult](using JsonProtocol.resultFormat, TypeInformation.of(classOf[InferenceResult])))
+      .setValueOnlyDeserializer(new JsonDeserializer[InferenceResult](using EventJsonProtocol.resultFormat, TypeInformation.of(classOf[InferenceResult])))
       .build()
 
     val alertSource = KafkaSource.builder[InferenceAlert]()
@@ -324,7 +345,7 @@ object ClickHouseIngestJobSpec extends com.ainsoft.brain.flink.jobs.JobSpec {
       .setTopics(alertTopic)
       .setGroupId(groupId + "-alerts")
       .setStartingOffsets(OffsetsInitializer.earliest())
-      .setValueOnlyDeserializer(new JsonDeserializer[InferenceAlert](using JsonProtocol.alertFormat, TypeInformation.of(classOf[InferenceAlert])))
+      .setValueOnlyDeserializer(new JsonDeserializer[InferenceAlert](using EventJsonProtocol.alertFormat, TypeInformation.of(classOf[InferenceAlert])))
       .build()
 
     val rawSink = new ClickHouseSink[RawEventRecord](
@@ -414,7 +435,5 @@ object ClickHouseIngestJobSpec extends com.ainsoft.brain.flink.jobs.JobSpec {
     env.fromSource(featureBaseSource, WatermarkStrategy.noWatermarks(), "feature-base-source").sinkTo(featureSink).name("feature-base-sink")
     env.fromSource(resultSource, WatermarkStrategy.noWatermarks(), "result-source").sinkTo(resultSink).name("result-sink")
     env.fromSource(alertSource, WatermarkStrategy.noWatermarks(), "alert-source").sinkTo(alertSink).name("alert-sink")
-
-    env.execute("ClickHouse Ingest Job")
   }
 }

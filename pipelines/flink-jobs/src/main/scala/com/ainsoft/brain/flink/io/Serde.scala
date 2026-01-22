@@ -5,12 +5,15 @@ import com.ainsoft.brain.flink.model.*
 import com.ainsoft.brain.core.events.EventJsonProtocol
 import org.apache.flink.api.common.serialization.{DeserializationSchema, SerializationSchema}
 import org.apache.flink.api.common.typeinfo.TypeInformation
+import spray.json.*
+import spray.json.DefaultJsonProtocol.*
 
 import java.nio.charset.StandardCharsets
 import scala.util.Try
 
 final class EnvelopeDeserializer extends DeserializationSchema[ParsedEnvelope] {
   import EventJsonProtocol.*
+  private given RootJsonFormat[RawFrameJson] = jsonFormat9(RawFrameJson.apply)
 
   override def deserialize(message: Array[Byte]): ParsedEnvelope = {
     val asProto = Try(EventEnvelope.parseFrom(message)).toOption

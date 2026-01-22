@@ -1,9 +1,11 @@
 package com.ainsoft.brain.flink.jobs.inference
 
 import com.ainsoft.brain.flink.io.{FeatureDeserializer, InferenceRequestSerializer}
-import com.ainsoft.brain.flink.model.{FeatureEvent, InferenceRequest}
+import com.ainsoft.brain.core.events.{FeatureEvent, InferenceRequest}
 import com.ainsoft.brain.flink.jobs.JobSpec
 import com.ainsoft.brain.flink.util.Env
+import org.apache.flink.api.common.functions.MapFunction
+import org.apache.flink.api.common.typeinfo.TypeInformation
 import org.apache.flink.connector.kafka.source.KafkaSource
 import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer
 import org.apache.flink.connector.kafka.sink.{KafkaRecordSerializationSchema, KafkaSink}
@@ -48,26 +50,28 @@ object InferenceTriggerJobSpec extends JobSpec {
 
     val inferenceRequests = env
       .fromSource(source, org.apache.flink.api.common.eventtime.WatermarkStrategy.noWatermarks(), "health-feature-source")
-      .map { feature =>
-        InferenceRequest(
-          deviceId = feature.deviceId,
-          sessionId = feature.sessionId,
-          sensorType = feature.sensorType,
-          startTsMs = feature.startTsMs,
-          endTsMs = feature.endTsMs,
-          featureSchemaVersion = feature.schemaVersion,
-          features = List(
-            feature.durationMs.toDouble,
-            feature.peakPayloadBytes.toDouble,
-            feature.meanPayloadBytes,
-            feature.stdPayloadBytes,
-            feature.impulsePayloadBytes,
-            feature.count.toDouble,
-            feature.contactRatio,
-            feature.loadingRate
+      .map(new MapFunction[FeatureEvent, InferenceRequest] {
+        override def map(feature: FeatureEvent): InferenceRequest =
+          InferenceRequest(
+            deviceId = feature.deviceId,
+            sessionId = feature.sessionId,
+            sensorType = feature.sensorType,
+            startTsMs = feature.startTsMs,
+            endTsMs = feature.endTsMs,
+            featureSchemaVersion = feature.schemaVersion,
+            features = List(
+              feature.durationMs.toDouble,
+              feature.peakPayloadBytes.toDouble,
+              feature.meanPayloadBytes,
+              feature.stdPayloadBytes,
+              feature.impulsePayloadBytes,
+              feature.count.toDouble,
+              feature.contactRatio,
+              feature.loadingRate
+            )
           )
-        )
-      }
+      })
+      .returns(TypeInformation.of(classOf[InferenceRequest]))
 
     inferenceRequests.sinkTo(inferenceSink).name("inference-sink")
   }

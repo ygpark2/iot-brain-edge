@@ -1,6 +1,7 @@
 package com.ainsoft.brain.ingest
 
 import com.ainsoft.brain.v1.brain_events.EventEnvelope
+import com.ainsoft.brain.ingest.IngestEvent
 import java.util.Base64
 import scala.util.Try
 

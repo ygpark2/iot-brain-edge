@@ -1,7 +1,7 @@
 package com.ainsoft.brain.flink.jobs.features
 
 import com.ainsoft.brain.flink.io.{FeatureDeserializer, FeatureSerializer}
-import com.ainsoft.brain.flink.model.FeatureEvent
+import com.ainsoft.brain.core.events.FeatureEvent
 import com.ainsoft.brain.flink.jobs.JobSpec
 import com.ainsoft.brain.flink.util.Env
 import org.apache.flink.connector.kafka.source.KafkaSource

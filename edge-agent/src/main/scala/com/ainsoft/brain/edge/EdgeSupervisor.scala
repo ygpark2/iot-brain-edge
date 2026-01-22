@@ -7,7 +7,7 @@ import org.apache.pekko.actor.typed.scaladsl.Behaviors
 object EdgeSupervisor {
   sealed trait Command
   final case class Ingest(envelope: Envelope) extends Command
-  final case object Start extends Command
+  case object Start extends Command
 
   def apply(): Behavior[Command] =
     Behaviors.setup { ctx =>

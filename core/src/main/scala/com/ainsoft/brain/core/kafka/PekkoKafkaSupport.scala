@@ -6,6 +6,7 @@ import org.apache.pekko.kafka.scaladsl.{Consumer, Producer}
 import org.apache.pekko.stream.scaladsl.{Keep, RestartSource, Sink, Source}
 import org.apache.pekko.stream.{KillSwitches, Materializer, UniqueKillSwitch}
 import org.apache.pekko.actor.typed.ActorSystem
+import org.apache.pekko.Done
 import org.apache.kafka.clients.producer.ProducerRecord
 import org.apache.kafka.common.serialization.{StringDeserializer, StringSerializer}
 import spray.json.*
@@ -27,15 +28,17 @@ object PekkoKafkaSupport {
     maxBackoff: FiniteDuration,
     randomFactor: Double
   )(
-    handler: ConsumerMessage.CommittableMessage[String, String] => Future[Unit]
+    handler: ConsumerMessage.CommittableMessage[String, String] => Future[ConsumerMessage.CommittableOffset]
   ): (UniqueKillSwitch, Future[Done]) = {
     implicit val mat: Materializer = Materializer(system)
 
     val restartable =
       RestartSource.withBackoff(
-        minBackoff = minBackoff,
-        maxBackoff = maxBackoff,
-        randomFactor = randomFactor
+        settings = org.apache.pekko.stream.RestartSettings(
+          minBackoff = minBackoff,
+          maxBackoff = maxBackoff,
+          randomFactor = randomFactor
+        )
       ) { () =>
         Consumer.committableSource(settings, Subscriptions.topics(subscriptionTopic))
       }
@@ -43,7 +46,9 @@ object PekkoKafkaSupport {
     restartable
       .viaMat(KillSwitches.single)(Keep.right)
       .mapAsync(parallelism)(handler)
-      .toMat(Sink.ignore)(Keep.both)
+      .toMat(org.apache.pekko.kafka.scaladsl.Committer.sink(
+        org.apache.pekko.kafka.CommitterSettings(system)
+      ))(Keep.both)
       .run()
   }
 
@@ -64,7 +69,7 @@ object PekkoKafkaSupport {
 
   def delayFail[A](system: ActorSystem[?], d: FiniteDuration, ex: Throwable): Future[A] = {
     val p = Promise[A]()
-    system.scheduler.scheduleOnce(d, new Runnable { override def run(): Unit = p.failure(ex) })(system.executionContext)
+    system.scheduler.scheduleOnce(d, new Runnable { override def run(): Unit = p.failure(ex) })(using system.executionContext)
     p.future
   }
 
