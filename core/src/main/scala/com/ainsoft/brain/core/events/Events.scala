@@ -58,6 +58,17 @@ final case class SessionFeature(
   featureSchemaVersion: String
 )
 
+final case class WindowFeature(
+  deviceId: String,
+  sensorType: String,
+  windowStartMs: Long,
+  windowEndMs: Long,
+  windowSizeMs: Long,
+  count: Long,
+  meanValue: Double,
+  featureSchemaVersion: String
+)
+
 final case class InferenceResult(
   deviceId: String,
   sessionId: String,
@@ -86,6 +97,7 @@ object EventJsonProtocol extends DefaultJsonProtocol {
   implicit val requestFormat: RootJsonFormat[InferenceRequest] = jsonFormat7(InferenceRequest.apply)
   implicit val rawRecordFormat: RootJsonFormat[RawEventRecord] = jsonFormat9(RawEventRecord.apply)
   implicit val sessionFeatureFormat: RootJsonFormat[SessionFeature] = jsonFormat14(SessionFeature.apply)
+  implicit val windowFeatureFormat: RootJsonFormat[WindowFeature] = jsonFormat8(WindowFeature.apply)
   implicit val resultFormat: RootJsonFormat[InferenceResult] = jsonFormat8(InferenceResult.apply)
   implicit val alertFormat: RootJsonFormat[InferenceAlert] = jsonFormat9(InferenceAlert.apply)
 }

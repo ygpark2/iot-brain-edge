@@ -117,6 +117,10 @@ object SessionizerJobSpec extends JobSpec {
     val groupId = Env.get("FLINK_GROUP_ID", "flink-sessionizer")
     val idleGapMs = Env.get("FLINK_SESSION_GAP_MS", "5000").toLong
     val watermarkLagMs = Env.get("FLINK_WATERMARK_LAG_MS", "5000").toLong
+    val sessionizeTypes = Env
+      .getOpt("FLINK_SESSIONIZE_SENSOR_TYPES")
+      .map(_.split(",").toList.map(_.trim).filter(_.nonEmpty).map(_.toUpperCase).toSet)
+      .getOrElse(Set.empty)
 
     val source = KafkaSource.builder[ParsedEnvelope]()
       .setBootstrapServers(bootstrapServers)
@@ -159,7 +163,11 @@ object SessionizerJobSpec extends JobSpec {
       })
       .returns(TypeInformation.of(classOf[RawEventRecord]))
 
-    val features = parsed
+    val sessionizable = if (sessionizeTypes.isEmpty) parsed else parsed.filter(new FilterFunction[ParsedEnvelope] {
+      override def filter(value: ParsedEnvelope): Boolean = sessionizeTypes.contains(value.sensorType.toUpperCase)
+    })
+
+    val features = sessionizable
       .keyBy(new KeySelector[ParsedEnvelope, String] {
         override def getKey(value: ParsedEnvelope): String = s"${value.deviceId}:${value.sessionId}:${value.sensorType}"
       })

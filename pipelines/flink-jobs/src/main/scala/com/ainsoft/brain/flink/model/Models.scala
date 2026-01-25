@@ -7,6 +7,7 @@ export com.ainsoft.brain.core.events.{
   InferenceRequest,
   RawEventRecord,
   SessionFeature,
+  WindowFeature,
   InferenceResult,
   InferenceAlert
 }

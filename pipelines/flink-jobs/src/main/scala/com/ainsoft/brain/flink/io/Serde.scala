@@ -60,6 +60,12 @@ final class FeatureSerializer extends SerializationSchema[FeatureEvent] {
     element.toJson.compactPrint.getBytes(StandardCharsets.UTF_8)
 }
 
+final class WindowFeatureSerializer extends SerializationSchema[WindowFeature] {
+  import EventJsonProtocol.*
+  override def serialize(element: WindowFeature): Array[Byte] =
+    element.toJson.compactPrint.getBytes(StandardCharsets.UTF_8)
+}
+
 final class FeatureDeserializer extends DeserializationSchema[FeatureEvent] {
   import EventJsonProtocol.*
   override def deserialize(message: Array[Byte]): FeatureEvent =

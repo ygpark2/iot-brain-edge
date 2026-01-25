@@ -2,7 +2,7 @@ package com.ainsoft.brain.flink.jobs.clickhouse
 
 import com.ainsoft.brain.flink.io.JsonDeserializer
 import com.ainsoft.brain.core.events.EventJsonProtocol
-import com.ainsoft.brain.core.events.{InferenceAlert, InferenceResult, RawEventRecord, SessionFeature}
+import com.ainsoft.brain.core.events.{InferenceAlert, InferenceResult, RawEventRecord, SessionFeature, WindowFeature}
 import com.ainsoft.brain.flink.util.Env
 import org.apache.flink.api.common.eventtime.WatermarkStrategy
 import org.apache.flink.api.common.typeinfo.TypeInformation
@@ -97,6 +97,8 @@ object ClickHouseIngestJobSpec extends com.ainsoft.brain.flink.jobs.JobSpec {
     val db = Env.get("CH_DB", "brain")
     val rawTable = Env.get("CH_RAW_TABLE", "rawframes")
     val featureTable = Env.get("CH_FEATURE_TABLE", "session_features")
+    val featureEnvTable = Env.get("CH_FEATURE_ENV_TABLE", "env_features")
+    val featurePowerTable = Env.get("CH_FEATURE_POWER_TABLE", "power_features")
     val resultTable = Env.get("CH_RESULT_TABLE", "inference_results")
     val alertTable = Env.get("CH_ALERT_TABLE", "inference_alerts")
     val user = Env.getOpt("CH_USER")
@@ -126,20 +128,20 @@ object ClickHouseIngestJobSpec extends com.ainsoft.brain.flink.jobs.JobSpec {
       .setValueOnlyDeserializer(new JsonDeserializer[SessionFeature](using EventJsonProtocol.sessionFeatureFormat, TypeInformation.of(classOf[SessionFeature])))
       .build()
 
-    val featurePowerSource = KafkaSource.builder[SessionFeature]()
+    val featurePowerSource = KafkaSource.builder[WindowFeature]()
       .setBootstrapServers(bootstrapServers)
       .setTopics(featurePowerTopic)
       .setGroupId(groupId + "-features-power")
       .setStartingOffsets(OffsetsInitializer.earliest())
-      .setValueOnlyDeserializer(new JsonDeserializer[SessionFeature](using EventJsonProtocol.sessionFeatureFormat, TypeInformation.of(classOf[SessionFeature])))
+      .setValueOnlyDeserializer(new JsonDeserializer[WindowFeature](using EventJsonProtocol.windowFeatureFormat, TypeInformation.of(classOf[WindowFeature])))
       .build()
 
-    val featureEnvSource = KafkaSource.builder[SessionFeature]()
+    val featureEnvSource = KafkaSource.builder[WindowFeature]()
       .setBootstrapServers(bootstrapServers)
       .setTopics(featureEnvTopic)
       .setGroupId(groupId + "-features-env")
       .setStartingOffsets(OffsetsInitializer.earliest())
-      .setValueOnlyDeserializer(new JsonDeserializer[SessionFeature](using EventJsonProtocol.sessionFeatureFormat, TypeInformation.of(classOf[SessionFeature])))
+      .setValueOnlyDeserializer(new JsonDeserializer[WindowFeature](using EventJsonProtocol.windowFeatureFormat, TypeInformation.of(classOf[WindowFeature])))
       .build()
 
     val featureBaseSource = KafkaSource.builder[SessionFeature]()
@@ -210,6 +212,40 @@ object ClickHouseIngestJobSpec extends com.ainsoft.brain.flink.jobs.JobSpec {
       password
     )
 
+    val featureEnvSink = new ClickHouseSink[WindowFeature](
+      s"INSERT INTO ${db}.${featureEnvTable} (device_id, sensor_type, window_start_ms, window_end_ms, window_size_ms, count, mean_value, feature_schema_version) FORMAT JSONEachRow",
+      f => JsObject(
+        "device_id" -> JsString(f.deviceId),
+        "sensor_type" -> JsString(f.sensorType),
+        "window_start_ms" -> JsNumber(f.windowStartMs),
+        "window_end_ms" -> JsNumber(f.windowEndMs),
+        "window_size_ms" -> JsNumber(f.windowSizeMs),
+        "count" -> JsNumber(f.count),
+        "mean_value" -> JsNumber(f.meanValue),
+        "feature_schema_version" -> JsString(f.featureSchemaVersion)
+      ).compactPrint,
+      httpUrl,
+      user,
+      password
+    )
+
+    val featurePowerSink = new ClickHouseSink[WindowFeature](
+      s"INSERT INTO ${db}.${featurePowerTable} (device_id, sensor_type, window_start_ms, window_end_ms, window_size_ms, count, mean_value, feature_schema_version) FORMAT JSONEachRow",
+      f => JsObject(
+        "device_id" -> JsString(f.deviceId),
+        "sensor_type" -> JsString(f.sensorType),
+        "window_start_ms" -> JsNumber(f.windowStartMs),
+        "window_end_ms" -> JsNumber(f.windowEndMs),
+        "window_size_ms" -> JsNumber(f.windowSizeMs),
+        "count" -> JsNumber(f.count),
+        "mean_value" -> JsNumber(f.meanValue),
+        "feature_schema_version" -> JsString(f.featureSchemaVersion)
+      ).compactPrint,
+      httpUrl,
+      user,
+      password
+    )
+
     val resultSink = new ClickHouseSink[InferenceResult](
       s"INSERT INTO ${db}.${resultTable} (device_id, session_id, sensor_type, model_version, label, score, start_ts_ms, end_ts_ms) FORMAT JSONEachRow",
       r => JsObject(
@@ -248,8 +284,8 @@ object ClickHouseIngestJobSpec extends com.ainsoft.brain.flink.jobs.JobSpec {
     env.fromSource(rawSource, WatermarkStrategy.noWatermarks(), "raw-source").sinkTo(rawSink).name("raw-sink")
     env.fromSource(featureSource, WatermarkStrategy.noWatermarks(), "feature-source").sinkTo(featureSink).name("feature-sink")
     env.fromSource(featureHealthSource, WatermarkStrategy.noWatermarks(), "feature-health-source").sinkTo(featureSink).name("feature-health-sink")
-    env.fromSource(featurePowerSource, WatermarkStrategy.noWatermarks(), "feature-power-source").sinkTo(featureSink).name("feature-power-sink")
-    env.fromSource(featureEnvSource, WatermarkStrategy.noWatermarks(), "feature-env-source").sinkTo(featureSink).name("feature-env-sink")
+    env.fromSource(featurePowerSource, WatermarkStrategy.noWatermarks(), "feature-power-source").sinkTo(featurePowerSink).name("feature-power-sink")
+    env.fromSource(featureEnvSource, WatermarkStrategy.noWatermarks(), "feature-env-source").sinkTo(featureEnvSink).name("feature-env-sink")
     env.fromSource(featureBaseSource, WatermarkStrategy.noWatermarks(), "feature-base-source").sinkTo(featureSink).name("feature-base-sink")
     env.fromSource(resultSource, WatermarkStrategy.noWatermarks(), "result-source").sinkTo(resultSink).name("result-sink")
     env.fromSource(alertSource, WatermarkStrategy.noWatermarks(), "alert-source").sinkTo(alertSink).name("alert-sink")
@@ -277,6 +313,8 @@ object ClickHouseIngestJobSpec extends com.ainsoft.brain.flink.jobs.JobSpec {
     val db = Env.get("CH_DB", "brain")
     val rawTable = Env.get("CH_RAW_TABLE", "rawframes")
     val featureTable = Env.get("CH_FEATURE_TABLE", "session_features")
+    val featureEnvTable = Env.get("CH_FEATURE_ENV_TABLE", "env_features")
+    val featurePowerTable = Env.get("CH_FEATURE_POWER_TABLE", "power_features")
     val resultTable = Env.get("CH_RESULT_TABLE", "inference_results")
     val alertTable = Env.get("CH_ALERT_TABLE", "inference_alerts")
     val user = Env.getOpt("CH_USER")
@@ -308,20 +346,20 @@ object ClickHouseIngestJobSpec extends com.ainsoft.brain.flink.jobs.JobSpec {
       .setValueOnlyDeserializer(new JsonDeserializer[SessionFeature](using EventJsonProtocol.sessionFeatureFormat, TypeInformation.of(classOf[SessionFeature])))
       .build()
 
-    val featurePowerSource = KafkaSource.builder[SessionFeature]()
+    val featurePowerSource = KafkaSource.builder[WindowFeature]()
       .setBootstrapServers(bootstrapServers)
       .setTopics(featurePowerTopic)
       .setGroupId(groupId + "-features-power")
       .setStartingOffsets(OffsetsInitializer.earliest())
-      .setValueOnlyDeserializer(new JsonDeserializer[SessionFeature](using EventJsonProtocol.sessionFeatureFormat, TypeInformation.of(classOf[SessionFeature])))
+      .setValueOnlyDeserializer(new JsonDeserializer[WindowFeature](using EventJsonProtocol.windowFeatureFormat, TypeInformation.of(classOf[WindowFeature])))
       .build()
 
-    val featureEnvSource = KafkaSource.builder[SessionFeature]()
+    val featureEnvSource = KafkaSource.builder[WindowFeature]()
       .setBootstrapServers(bootstrapServers)
       .setTopics(featureEnvTopic)
       .setGroupId(groupId + "-features-env")
       .setStartingOffsets(OffsetsInitializer.earliest())
-      .setValueOnlyDeserializer(new JsonDeserializer[SessionFeature](using EventJsonProtocol.sessionFeatureFormat, TypeInformation.of(classOf[SessionFeature])))
+      .setValueOnlyDeserializer(new JsonDeserializer[WindowFeature](using EventJsonProtocol.windowFeatureFormat, TypeInformation.of(classOf[WindowFeature])))
       .build()
 
     val featureBaseSource = KafkaSource.builder[SessionFeature]()
@@ -392,6 +430,40 @@ object ClickHouseIngestJobSpec extends com.ainsoft.brain.flink.jobs.JobSpec {
       password
     )
 
+    val featureEnvSink = new ClickHouseSink[WindowFeature](
+      s"INSERT INTO ${db}.${featureEnvTable} (device_id, sensor_type, window_start_ms, window_end_ms, window_size_ms, count, mean_value, feature_schema_version) FORMAT JSONEachRow",
+      f => JsObject(
+        "device_id" -> JsString(f.deviceId),
+        "sensor_type" -> JsString(f.sensorType),
+        "window_start_ms" -> JsNumber(f.windowStartMs),
+        "window_end_ms" -> JsNumber(f.windowEndMs),
+        "window_size_ms" -> JsNumber(f.windowSizeMs),
+        "count" -> JsNumber(f.count),
+        "mean_value" -> JsNumber(f.meanValue),
+        "feature_schema_version" -> JsString(f.featureSchemaVersion)
+      ).compactPrint,
+      httpUrl,
+      user,
+      password
+    )
+
+    val featurePowerSink = new ClickHouseSink[WindowFeature](
+      s"INSERT INTO ${db}.${featurePowerTable} (device_id, sensor_type, window_start_ms, window_end_ms, window_size_ms, count, mean_value, feature_schema_version) FORMAT JSONEachRow",
+      f => JsObject(
+        "device_id" -> JsString(f.deviceId),
+        "sensor_type" -> JsString(f.sensorType),
+        "window_start_ms" -> JsNumber(f.windowStartMs),
+        "window_end_ms" -> JsNumber(f.windowEndMs),
+        "window_size_ms" -> JsNumber(f.windowSizeMs),
+        "count" -> JsNumber(f.count),
+        "mean_value" -> JsNumber(f.meanValue),
+        "feature_schema_version" -> JsString(f.featureSchemaVersion)
+      ).compactPrint,
+      httpUrl,
+      user,
+      password
+    )
+
     val resultSink = new ClickHouseSink[InferenceResult](
       s"INSERT INTO ${db}.${resultTable} (device_id, session_id, sensor_type, model_version, label, score, start_ts_ms, end_ts_ms) FORMAT JSONEachRow",
       r => JsObject(
@@ -430,8 +502,8 @@ object ClickHouseIngestJobSpec extends com.ainsoft.brain.flink.jobs.JobSpec {
     env.fromSource(rawSource, WatermarkStrategy.noWatermarks(), "raw-source").sinkTo(rawSink).name("raw-sink")
     env.fromSource(featureSource, WatermarkStrategy.noWatermarks(), "feature-source").sinkTo(featureSink).name("feature-sink")
     env.fromSource(featureHealthSource, WatermarkStrategy.noWatermarks(), "feature-health-source").sinkTo(featureSink).name("feature-health-sink")
-    env.fromSource(featurePowerSource, WatermarkStrategy.noWatermarks(), "feature-power-source").sinkTo(featureSink).name("feature-power-sink")
-    env.fromSource(featureEnvSource, WatermarkStrategy.noWatermarks(), "feature-env-source").sinkTo(featureSink).name("feature-env-sink")
+    env.fromSource(featurePowerSource, WatermarkStrategy.noWatermarks(), "feature-power-source").sinkTo(featurePowerSink).name("feature-power-sink")
+    env.fromSource(featureEnvSource, WatermarkStrategy.noWatermarks(), "feature-env-source").sinkTo(featureEnvSink).name("feature-env-sink")
     env.fromSource(featureBaseSource, WatermarkStrategy.noWatermarks(), "feature-base-source").sinkTo(featureSink).name("feature-base-sink")
     env.fromSource(resultSource, WatermarkStrategy.noWatermarks(), "result-source").sinkTo(resultSink).name("result-sink")
     env.fromSource(alertSource, WatermarkStrategy.noWatermarks(), "alert-source").sinkTo(alertSink).name("alert-sink")

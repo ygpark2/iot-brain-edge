@@ -1,3 +1,5 @@
+import sbtassembly.AssemblyPlugin.autoImport.*
+
 ThisBuild / scalaVersion := "3.7.4"
 ThisBuild / organization := "com.ainsoft"
 ThisBuild / version      := "0.1.0-SNAPSHOT"
@@ -68,9 +70,18 @@ lazy val flinkJobs = (project in file("pipelines/flink-jobs"))
   .settings(commonSettings)
   .settings(
     name := "flink-jobs",
+    run / fork := true,
+    assembly / assemblyJarName := "flink-jobs-assembly.jar",
+    assembly / assemblyMergeStrategy := {
+      case PathList("META-INF", _*) => MergeStrategy.discard
+      case "reference.conf" => MergeStrategy.concat
+      case x => MergeStrategy.first
+    },
     libraryDependencies ++= Seq(
       "org.apache.flink" % "flink-streaming-java" % Versions.flink,
+      "org.apache.flink" % "flink-runtime" % Versions.flink,
       "org.apache.flink" % "flink-clients" % Versions.flink,
+      "org.apache.flink" % "flink-connector-base" % Versions.flink,
       "org.apache.flink" % "flink-connector-kafka" % Versions.flinkKafka,
       "org.apache.flink" % "flink-json" % Versions.flink,
       "org.apache.flink" % "flink-runtime-web" % Versions.flink % "runtime",

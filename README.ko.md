@@ -197,6 +197,18 @@ make run-edge-http
 
 Flink 잡은 개별적으로 실행되며, 파이프라인 구성에 따라 순서대로 실행해야 합니다.
 
+### 클러스터 제출 (Flink UI에 표시됨)
+
+전체 잡 제출:
+```bash
+make run-all-flink
+```
+
+개별 잡 제출:
+```bash
+make run-flink-cluster JOB=sessionizer
+```
+
 ### 세셔나이저
 
 ```bash
