@@ -13,8 +13,12 @@ object JobScanner {
     try {
       scanResult.getClassesImplementing(classOf[JobSpec].getName).asScala.toSeq.flatMap { classInfo =>
         val cls = classInfo.loadClass()
-        val module = cls.getField("MODULE$").get(null).asInstanceOf[JobSpec]
-        Option(module)
+        try {
+          val module = cls.getField("MODULE$").get(null).asInstanceOf[JobSpec]
+          Option(module)
+        } catch {
+          case _: NoSuchFieldException => None
+        }
       }
     } finally {
       scanResult.close()

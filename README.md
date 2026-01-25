@@ -81,6 +81,16 @@ make run-alert
 
 ### 3) Run Flink jobs (JobRunner + spec)
 
+Submit to Flink cluster (shows in Flink UI):
+```bash
+make run-all-flink
+```
+
+Submit a single job to the cluster:
+```bash
+make run-flink-cluster JOB=sessionizer
+```
+
 Sessionizer:
 ```bash
 sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner sessionizer"

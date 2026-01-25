@@ -35,6 +35,12 @@ KAFKA_REPLICATION ?= 1
 # sbt
 SBT ?= sbt
 
+# Flink
+FLINK_JOBMANAGER_SERVICE ?= $(STACK)_flink-jobmanager
+FLINK_CLI ?= /opt/flink/bin/flink
+FLINK_JAR ?= pipelines/flink-jobs/target/scala-3.7.4/flink-jobs-assembly.jar
+FLINK_BG_PID ?= /tmp/flink-run-all.pid
+
 .PHONY: help
 help:
 	@echo "Swarm:"
@@ -62,6 +68,11 @@ help:
 	@echo "  make run-edge-http     - edge-agent -> HTTP ingest"
 	@echo "  make run-edge-kafka    - edge-agent -> Kafka (after KafkaProducer added)"
 	@echo "  make run-flink JOB=<name> [FLINK_CONFIG_YAML=path]"
+	@echo "  make flink-jar         - build flink fat jar"
+	@echo "  make run-flink-cluster JOB=<name> [FLINK_CONFIG_YAML=path]"
+	@echo "  make run-all-flink     - submit all flink jobs to cluster (sequential)"
+	@echo "  make run-all-flink-bg  - submit all flink jobs in background"
+	@echo "  make stop-all-flink    - stop background submit + cancel all flink jobs"
 	@echo ""
 	@echo "One-shot:"
 	@echo "  make dev-http          - swarm up + topic + run ingest + run edge(http)"
@@ -137,6 +148,10 @@ define KAFKA_CONTAINER_ID
 $(shell docker ps --filter "name=$(KAFKA_SERVICE)\.1" --format "{{.ID}}" | head -n 1)
 endef
 
+define FLINK_JM_CONTAINER_ID
+$(shell docker ps --filter "name=$(FLINK_JOBMANAGER_SERVICE)\.1" --format "{{.ID}}" | head -n 1)
+endef
+
 .PHONY: topic-create
 topic-create:
 	@if [ -z "$(KAFKA_CONTAINER_ID)" ]; then echo "Kafka container not found. Is the stack up?"; exit 1; fi
@@ -183,8 +198,8 @@ kafka-init: kafka-wait
 	  || $(KAFKA_TOPICS_PRG) --bootstrap-server $(KAFKA_BOOTSTRAP_SERVERS) --list \
 	'
 
-.PHONY: topics-pipeline
-topics-pipeline: kafka-wait
+.PHONY: create-kafka-topics
+create-kafka-topics: kafka-wait
 	@cid="$(KAFKA_CONTAINER_ID)"; \
 	echo "[topics-pipeline] creating pipeline topics ..."; \
 	for t in "$(TOPIC_RAW_PROCESSED)" "$(TOPIC_RAW_PROCESSED_DLQ)" "$(TOPIC_FEATURES)" "$(TOPIC_FEATURES_BASE)" "$(TOPIC_FEATURES_HEALTH)" "$(TOPIC_FEATURES_POWER)" "$(TOPIC_FEATURES_ENV)" "$(TOPIC_FEATURES_DLQ)" "$(TOPIC_INFERENCE_REQUESTS)" "$(TOPIC_INFERENCE_RESULTS)" "$(TOPIC_INFERENCE_RESULTS_DLQ)" "$(TOPIC_INFERENCE_ALERTS)" "$(TOPIC_INFERENCE_ALERTS_DLQ)"; do \
@@ -262,6 +277,49 @@ run-flink:
 	@if [ -z "$(JOB)" ]; then echo "Usage: make run-flink JOB=<name> [FLINK_CONFIG_YAML=path]"; exit 1; fi
 	@echo "Running Flink job: $(JOB)"
 	FLINK_CONFIG_YAML=$(FLINK_CONFIG_YAML) $(SBT) "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner $(JOB)"
+
+.PHONY: flink-jar
+flink-jar:
+	@echo "Building Flink fat jar..."
+	$(SBT) "project flinkJobs" assembly
+
+.PHONY: run-flink-cluster
+run-flink-cluster: flink-jar
+	@if [ -z "$(JOB)" ]; then echo "Usage: make run-flink-cluster JOB=<name> [FLINK_CONFIG_YAML=path]"; exit 1; fi
+	@if [ -z "$(FLINK_JM_CONTAINER_ID)" ]; then echo "Flink jobmanager container not found. Is the stack up?"; exit 1; fi
+	@echo "Submitting Flink job to cluster: $(JOB)"
+	@docker cp $(FLINK_JAR) $(FLINK_JM_CONTAINER_ID):/tmp/flink-jobs-assembly.jar
+	@docker exec -e FLINK_CONFIG_YAML=$(FLINK_CONFIG_YAML) $(FLINK_JM_CONTAINER_ID) \
+	  $(FLINK_CLI) run -c com.ainsoft.brain.flink.jobs.JobRunner /tmp/flink-jobs-assembly.jar $(JOB)
+
+.PHONY: run-all-flink
+run-all-flink:
+	@echo "Submitting all Flink jobs sequentially..."
+	@jobs=(sessionizer feature-base feature-health feature-power feature-env env-aggregator power-aggregator inference-trigger clickhouse-ingest); \
+	for job in "$${jobs[@]}"; do \
+	  $(MAKE) run-flink-cluster JOB="$$job"; \
+	done; \
+	:
+
+.PHONY: run-all-flink-bg
+run-all-flink-bg:
+	@echo "Submitting all Flink jobs in background..."
+	@nohup $(MAKE) run-all-flink >/tmp/flink-run-all.log 2>&1 & echo $$! > $(FLINK_BG_PID)
+	@echo "PID: $$(cat $(FLINK_BG_PID)) (log: /tmp/flink-run-all.log)"
+
+.PHONY: stop-all-flink
+stop-all-flink:
+	@if [ -f "$(FLINK_BG_PID)" ]; then \
+	  pid="$$(cat $(FLINK_BG_PID))"; \
+	  if kill -0 $$pid 2>/dev/null; then \
+	    echo "Stopping background submit (pid=$$pid)"; \
+	    kill $$pid; \
+	  fi; \
+	  rm -f $(FLINK_BG_PID); \
+	fi
+	@if [ -z "$(FLINK_JM_CONTAINER_ID)" ]; then echo "Flink jobmanager container not found. Is the stack up?"; exit 1; fi
+	@echo "Cancelling all Flink jobs in cluster..."
+	@docker exec $(FLINK_JM_CONTAINER_ID) $(FLINK_CLI) cancel -a
 
 # -------- one-shot helpers --------
 
