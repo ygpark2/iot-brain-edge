@@ -3,18 +3,57 @@
 Open-source "Brain" platform that connects sensor hardware (GRF / plantar pressure / 3D scanner) to actionable insights.
 
 ## Modules
-- proto/ : shared contracts (protobuf)
-- core/ : shared domain + utilities
-- edge-agent/ : Pekko-based edge runtime (device state + stream pipeline)
-- services/ingestion-service/ : Pekko HTTP ingest API
-- services/inference-service/ : Python model serving skeleton
-- ui/dashboard/ : dashboard placeholder
+- **proto/**: **Single Source of Truth** for shared contracts (Protobuf definitions)
+- **core/**: shared domain + utilities
+- **edge-agent/**: Pekko-based edge runtime (device state + stream pipeline)
+- **services/ingestion-service/**: Pekko HTTP ingest API
+- **services/inference-service/**: Python model serving skeleton
+- **dashboard/**: SvelteKit-based admin dashboard
+  - **Real-time Monitoring**: System throughput and service health visualization.
+  - **Device Management (CRUD)**: Register and configure edge devices.
+  - **Pipeline Topology**: Interactive map of service connectivity and data flow.
+  - **Message Inspector**: Real-time Kafka message sampling and Protobuf-to-JSON decoding.
+  - **Trace Timeline**: End-to-end journey tracking for specific session IDs.
+- **pipelines/flink-jobs/**: Apache Flink data processing jobs (**Pure Scala**)
 
-## Quick start
+## System Architecture
 
-### Prerequisites
-- Docker (with Swarm mode enabled)
-- sbt (Scala build tool)
+### Overview
+
+```
+┌─────────────┐     ┌──────────────┐     ┌─────────┐
+│ Sensors/Mock│────▶│  edge-agent  │────▶│  Kafka  │ (Protobuf: EventEnvelope)
+└─────────────┘     └──────────────┘     └─────────┘
+                                               │
+                                               ▼
+                                        ┌─────────────┐
+                                        │    Flink    │ (Protobuf Deserialize)
+                                        │  Processing │
+                                        └─────────────┘
+                                               │
+                    ┌──────────────────────────┼───────────────────────┐
+                    ▼                          ▼                       ▼
+          ┌──────────────────┐      ┌─────────────────┐     ┌─────────────────┐
+          │  inference-      │      │  ClickHouse     │     │  alert-service  │
+          │  service         │      │  Writer Job     │     │                 │
+          └──────────────────┘      └─────────────────┘     └─────────────────┘
+           (Protobuf Req/Res)       (Final Data Storage)    (JSON/Webhook Out)
+                    │                          │
+                    └────────────┬─────────────┘
+                                 ▼
+                          ClickHouse
+```
+
+### Data Schema & Serialization
+
+This platform uses **Protocol Buffers (Protobuf)** across all stages for high-performance serialization.
+
+- **EventEnvelope (proto/brain_events.proto)**: The common wrapper for all data. It includes `event_id`, `device_id`, `sensor_type`, timestamps, and a `payload` byte field for the actual data.
+- **Key Data Types (Payload contents)**:
+  - **RawFrame**: Original sensor data frame from devices.
+  - **WindowFeature**: Summary data aggregated over time windows (mean, count, etc.).
+  - **SessionFeature**: Feature values extracted by grouping data into sessions.
+  - **InferenceRequest/Result**: Request and result data for ML model inference.
 
 ### Start infrastructure (Kafka, ClickHouse, etc.)
 
@@ -81,6 +120,12 @@ make run-alert
 
 ### 3) Run Flink jobs (JobRunner + spec)
 
+### Unit Testing
+
+```bash
+sbt "project flinkJobs" test
+```
+
 Submit to Flink cluster (shows in Flink UI):
 ```bash
 make run-all-flink
@@ -108,6 +153,13 @@ sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner feature-
 sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner feature-health"
 sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner feature-power"
 sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner feature-env"
+```
+
+### Window Aggregators
+
+```bash
+sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner env-aggregator"
+sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner power-aggregator"
 ```
 
 Inference trigger:
