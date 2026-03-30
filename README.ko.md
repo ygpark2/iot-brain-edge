@@ -8,16 +8,21 @@
 
 ## 모듈
 
-- **proto/**: 공통 계약 (Protobuf 스키마 정의)
+- **proto/**: **단일 소스** 공통 계약 (모든 모듈이 공유하는 Protobuf 스키마 정의)
 - **core/**: 공통 도메인 모델 및 유틸리티
 - **edge-agent/**: Pekko 기반 엣지 런타임 (디바이스 상태 관리 + 스트림 파이프라인)
 - **services/ingestion-service/**: Pekko HTTP 수집 API (HTTP → Kafka)
 - **services/inference-service/**: Python 모델 서빙 (FastAPI + Kafka)
 - **services/alert-service/**: 알림 처리 서비스 (Kafka → Webhook)
-- **ui/dashboard/**: 대시보드 (placeholder)
+- **dashboard/**: SvelteKit 기반 관리 대시보드
+  - **실시간 모니터링**: 전체 시스템 처리량 및 서비스 상태 시각화
+  - **장치 관리 (CRUD)**: 엣지 디바이스 등록 및 설정 관리
+  - **Pipeline Topology**: 서비스 간 연결 상태 및 데이터 흐름 시각화
+  - **Message Inspector**: Kafka 메시지(Protobuf) 실시간 샘플링 및 JSON 디코딩
+  - **Trace Timeline**: 특정 세션 ID의 전체 데이터 여정 추적
 - **deploy/**: 인프라 및 배포 자산 (Docker Swarm, ClickHouse 스키마 초기화)
 - **docs/**: 아키텍처 및 운영 노트
-- **pipelines/flink-jobs/**: Apache Flink 데이터 처리 잡
+- **pipelines/flink-jobs/**: Apache Flink 데이터 처리 잡 (**Pure Scala** 기반)
 
 ## 시스템 아키텍처
 
@@ -25,12 +30,12 @@
 
 ```
 ┌─────────────┐     ┌──────────────┐     ┌─────────┐
-│  센서/Mock  │────▶│  edge-agent  │────▶│  Kafka  │
+│  센서/Mock  │────▶│  edge-agent  │────▶│  Kafka  │ (Protobuf: EventEnvelope)
 └─────────────┘     └──────────────┘     └─────────┘
                                                │
                                                ▼
                                         ┌─────────────┐
-                                        │    Flink    │
+                                        │    Flink    │ (Protobuf Deserialize)
                                         │  Processing │
                                         └─────────────┘
                                                │
@@ -40,11 +45,23 @@
           │  inference-      │      │  ClickHouse     │     │  alert-service  │
           │  service         │      │  Writer Job     │     │                 │
           └──────────────────┘      └─────────────────┘     └─────────────────┘
+           (Protobuf Req/Res)       (Final Data Storage)    (JSON/Webhook Out)
                     │                          │
                     └────────────┬─────────────┘
                                  ▼
                           ClickHouse
 ```
+
+### 데이터 스키마 및 직렬화
+
+이 플랫폼은 전 구간에서 **Protocol Buffers (Protobuf)**를 사용하여 고성능 직렬화를 수행합니다.
+
+- **EventEnvelope (proto/brain_events.proto)**: 모든 데이터의 공통 래퍼입니다. 이벤트 ID, 장치 ID, 센서 타입, 타임스탬프 및 실제 데이터를 담는 `payload` 바이트 필드를 포함합니다.
+- **주요 데이터 유형 (Payload contents)**:
+  - **RawFrame**: 기기에서 수집된 원래의 센서 데이터 프레임
+  - **WindowFeature**: 윈도우 집계(평균, 카운트 등)를 통해 요약된 데이터
+  - **SessionFeature**: 세션 단위로 그룹화되어 추출된 특징값
+  - **InferenceRequest/Result**: 머신러닝 모델 추론을 위한 요청 및 결과 데이터
 
 ### 핵심 컴포넌트
 
@@ -63,6 +80,7 @@
 - 실시간 스트림 처리 엔진
 - **세셔나이저**: 연속된 프레임을 세션으로 그룹화
 - **피처 추출**: 다양한 도메인별 피처 추출 (기본, 건강, 파워, 환경)
+- **윈도우 집계**: 환경 및 전력 데이터에 대한 시간 윈도우 기반 평균 집계 (env-aggregator, power-aggregator)
 - **인퍼런스 트리거**: 추론 요청 생성 및 발행
 
 #### 4. Inference Service
@@ -197,6 +215,12 @@ make run-edge-http
 
 Flink 잡은 개별적으로 실행되며, 파이프라인 구성에 따라 순서대로 실행해야 합니다.
 
+### 유닛 테스트
+
+```bash
+sbt "project flinkJobs" test
+```
+
 ### 클러스터 제출 (Flink UI에 표시됨)
 
 전체 잡 제출:
@@ -228,6 +252,13 @@ sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner feature-
 sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner feature-health"
 sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner feature-power"
 sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner feature-env"
+```
+
+### 윈도우 집계
+
+```bash
+sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner env-aggregator"
+sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner power-aggregator"
 ```
 
 ### 인퍼런스 트리거
