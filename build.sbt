@@ -48,7 +48,8 @@ lazy val core = (project in file("core"))
     ),
     Compile / PB.targets := Seq(
       scalapb.gen() -> (Compile / sourceManaged).value / "scalapb"
-    )
+    ),
+    Compile / PB.protoSources += baseDirectory.value.getParentFile / "proto"
   )
 
 lazy val edgeAgent = (project in file("edge-agent"))
