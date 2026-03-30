@@ -1,40 +1,24 @@
 <script>
 	import { Plus, Search, Edit2, Trash2, X, Check } from 'lucide-svelte';
+	import { enhance } from '$app/forms';
 
-	let devices = [
-		{ id: 'device-001', location: 'Factory Floor A', sensors: 'GRF, Plantar', status: 'Online' },
-		{ id: 'device-002', location: 'Warehouse B', sensors: '3D Scanner', status: 'Online' },
-		{ id: 'device-003', location: 'Lab 1', sensors: 'GRF', status: 'Offline' }
-	];
+	export let data;
+	$: devices = data.devices;
 
 	let isAdding = false;
 	let editingId = null;
 	let searchQuery = '';
 
-	let newDevice = { id: '', location: '', sensors: '', status: 'Online' };
-
-	function addDevice() {
-		devices = [...devices, { ...newDevice }];
-		resetForm();
-	}
-
-	function deleteDevice(id) {
-		devices = devices.filter((d) => d.id !== id);
-	}
+	let formValues = { id: '', location: '', sensors: '', status: 'Online' };
 
 	function startEdit(device) {
 		editingId = device.id;
-		newDevice = { ...device };
+		formValues = { ...device };
 		isAdding = true;
 	}
 
-	function saveEdit() {
-		devices = devices.map((d) => (d.id === editingId ? { ...newDevice } : d));
-		resetForm();
-	}
-
 	function resetForm() {
-		newDevice = { id: '', location: '', sensors: '', status: 'Online' };
+		formValues = { id: '', location: '', sensors: '', status: 'Online' };
 		isAdding = false;
 		editingId = null;
 	}
@@ -50,7 +34,7 @@
 	<header>
 		<div class="title-section">
 			<h1>Device Management</h1>
-			<p>Register and manage your edge devices</p>
+			<p>Register and manage your edge devices (ClickHouse Sync)</p>
 		</div>
 		<button class="btn-primary" on:click={() => (isAdding = true)}>
 			<Plus size={20} /> Add Device
@@ -90,9 +74,16 @@
 								<button class="btn-icon" on:click={() => startEdit(device)} title="Edit">
 									<Edit2 size={16} />
 								</button>
-								<button class="btn-icon delete" on:click={() => deleteDevice(device.id)} title="Delete">
-									<Trash2 size={16} />
-								</button>
+								<form method="POST" action="?/delete" use:enhance={() => {
+									return async ({ result }) => {
+										if (result.type === 'success') resetForm();
+									};
+								}}>
+									<input type="hidden" name="id" value={device.id} />
+									<button type="submit" class="btn-icon delete" title="Delete">
+										<Trash2 size={16} />
+									</button>
+								</form>
 							</div>
 						</td>
 					</tr>
@@ -108,28 +99,33 @@
 					<h3>{editingId ? 'Edit Device' : 'Register New Device'}</h3>
 					<button class="btn-close" on:click={resetForm}><X size={20} /></button>
 				</div>
-				<form on:submit|preventDefault={editingId ? saveEdit : addDevice}>
+				<form method="POST" action="?/upsert" use:enhance={() => {
+					return async ({ result }) => {
+						if (result.type === 'success') resetForm();
+					};
+				}}>
 					<div class="form-group">
 						<label for="deviceId">Device ID</label>
 						<input
+							name="id"
 							id="deviceId"
 							type="text"
-							bind:value={newDevice.id}
-							disabled={!!editingId}
+							bind:value={formValues.id}
+							readonly={!!editingId}
 							required
 						/>
 					</div>
 					<div class="form-group">
 						<label for="location">Location</label>
-						<input id="location" type="text" bind:value={newDevice.location} required />
+						<input name="location" id="location" type="text" bind:value={formValues.location} required />
 					</div>
 					<div class="form-group">
 						<label for="sensors">Sensor Types (comma separated)</label>
-						<input id="sensors" type="text" bind:value={newDevice.sensors} required />
+						<input name="sensors" id="sensors" type="text" bind:value={formValues.sensors} required />
 					</div>
 					<div class="form-group">
-						<label for="status">Initial Status</label>
-						<select id="status" bind:value={newDevice.status}>
+						<label for="status">Status</label>
+						<select name="status" id="status" bind:value={formValues.status}>
 							<option value="Online">Online</option>
 							<option value="Offline">Offline</option>
 						</select>
