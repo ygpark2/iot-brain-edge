@@ -49,7 +49,7 @@ object Main extends DefaultJsonProtocol {
         }
 
     val bindingF =
-      http.newServerAt("0.0.0.0", 8080).bind(route)
+      http.newServerAt("0.0.0.0", 8082).bind(route)
 
     bindingF.onComplete {
       case Success(binding) =>
