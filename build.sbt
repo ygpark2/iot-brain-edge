@@ -88,7 +88,11 @@ lazy val flinkJobs = (project in file("pipelines/flink-jobs"))
       "com.thesamet.scalapb" %% "scalapb-runtime" % Versions.scalapb,
       "io.spray" %% "spray-json" % Versions.sprayJson,
       "io.github.classgraph" % "classgraph" % "4.8.174",
-    )
+      "org.scalatest" %% "scalatest" % "3.2.19" % Test,
+      "org.scalatestplus" %% "mockito-5-12" % "3.2.19.0" % Test
+    ),
+    Test / fork := true,
+    Test / javaOptions += "-Dnet.bytebuddy.experimental=true"
   )
 
 lazy val ingestionService = (project in file("services/ingestion-service"))
