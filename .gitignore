@@ -1,6 +1,11 @@
 # macOS
 .DS_Store
 
+# AI
+.codex/
+.opencode/
+AGENTS.md
+
 # IntelliJ / Metals
 .idea/
 .metals/
@@ -26,4 +31,7 @@ dist/
 
 # Data
 .data/
+
+examples/
+aws.doc.md
 
