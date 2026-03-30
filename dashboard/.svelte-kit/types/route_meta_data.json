@@ -1,0 +1,12 @@
+{
+	"/": [
+		"src/routes/+page.server.ts"
+	],
+	"/devices": [
+		"src/routes/devices/+page.server.ts"
+	],
+	"/settings": [],
+	"/streams": [],
+	"/topology": [],
+	"/trace": []
+}

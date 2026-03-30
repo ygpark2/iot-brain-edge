@@ -1,186 +1,215 @@
 <script>
-	import { Server, Cpu, Database, Share2, Zap, ArrowRight } from 'lucide-svelte';
+	import { Cpu, Database, Share2, Zap, Activity } from 'lucide-svelte';
 
 	const nodes = [
-		{ id: 'edge', name: 'Edge Agent', type: 'source', status: 'online', icon: Cpu, x: 50, y: 150 },
-		{ id: 'kafka', name: 'Kafka Cluster', type: 'broker', status: 'online', icon: Share2, x: 300, y: 150 },
-		{ id: 'flink', name: 'Flink Jobs', type: 'processor', status: 'online', icon: Zap, x: 550, y: 150 },
-		{ id: 'inference', name: 'Inference Svc', type: 'processor', status: 'offline', icon: Activity, x: 800, y: 50 },
-		{ id: 'clickhouse', name: 'ClickHouse', type: 'sink', status: 'online', icon: Database, x: 800, y: 250 }
+		{ id: 'edge', name: 'Edge Agent', status: 'online', icon: Cpu, x: 50, y: 150 },
+		{ id: 'kafka', name: 'Kafka Cluster', status: 'online', icon: Share2, x: 300, y: 150 },
+		{ id: 'flink', name: 'Flink Jobs', status: 'online', icon: Zap, x: 550, y: 150 },
+		{ id: 'inference', name: 'Inference Svc', status: 'offline', icon: Activity, x: 800, y: 50 },
+		{ id: 'clickhouse', name: 'ClickHouse', status: 'online', icon: Database, x: 800, y: 250 }
 	];
 
-	import { Activity } from 'lucide-svelte';
+	// 노드 크기 정의
+	const nodeW = 160;
+	const nodeH = 80;
 
 	const connections = [
-		{ from: 'edge', to: 'kafka', label: 'Raw Frames' },
-		{ from: 'kafka', to: 'flink', label: 'Stream' },
-		{ from: 'flink', to: 'inference', label: 'Requests' },
-		{ from: 'inference', to: 'kafka', label: 'Results' },
-		{ from: 'flink', to: 'clickhouse', label: 'Ingest' },
-		{ from: 'kafka', to: 'clickhouse', label: 'Persistence' }
+		{ from: 'edge', to: 'kafka', type: 'straight' },
+		{ from: 'kafka', to: 'flink', type: 'straight' },
+		{ from: 'flink', to: 'inference', type: 'curve-up' },
+		{ from: 'inference', to: 'kafka', type: 'back-loop' },
+		{ from: 'flink', to: 'clickhouse', type: 'curve-down' },
+		{ from: 'kafka', to: 'clickhouse', type: 'wide-loop' }
 	];
 
-	function getPos(id) {
-		const node = nodes.find((n) => n.id === id);
-		return node ? { x: node.x + 80, y: node.y + 40 } : { x: 0, y: 0 };
+	function getPath(conn) {
+		const startNode = nodes.find(n => n.id === conn.from);
+		const endNode = nodes.find(n => n.id === conn.to);
+		
+		const x1 = startNode.x + nodeW;
+		const y1 = startNode.y + nodeH / 2;
+		const x2 = endNode.x;
+		const y2 = endNode.y + nodeH / 2;
+
+		if (conn.type === 'straight') {
+			return `M ${x1} ${y1} L ${x2} ${y2}`;
+		}
+		if (conn.type === 'curve-up' || conn.type === 'curve-down') {
+			const cp1x = x1 + (x2 - x1) / 2;
+			return `M ${x1} ${y1} C ${cp1x} ${y1}, ${cp1x} ${y2}, ${x2} ${y2}`;
+		}
+		if (conn.type === 'back-loop') {
+			// Inference에서 Kafka로 돌아오는 선 (위로 돌아감)
+			return `M ${startNode.x} ${y1} C ${startNode.x - 100} ${y1 - 100}, ${endNode.x + nodeW + 100} ${endNode.y - 100}, ${endNode.x + nodeW / 2} ${endNode.y}`;
+		}
+		if (conn.type === 'wide-loop') {
+			// Kafka에서 ClickHouse로 가는 선 (아래로 크게 돌아감)
+			return `M ${x1 - 20} ${startNode.y + nodeH} C ${x1} ${startNode.y + nodeH + 80}, ${x2} ${y2 + 80}, ${x2} ${y2}`;
+		}
+		return `M ${x1} ${y1} L ${x2} ${y2}`;
 	}
 </script>
 
 <div class="topology-page">
 	<header>
 		<h1>Pipeline Topology</h1>
-		<p>Real-time visualization of data flow and service connectivity</p>
+		<p>Enhanced visualization with precise path routing and clear node borders</p>
 	</header>
 
 	<div class="canvas-container">
-		<svg width="1000" height="400" viewBox="0 0 1000 400">
-			<!-- Connections -->
+		<svg width="1000" height="450" viewBox="0 0 1000 450">
 			<defs>
-				<marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
-					<polygon points="0 0, 10 3.5, 0 7" fill="#94a3b8" />
+				<marker id="arrowhead" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+					<polygon points="0 0, 10 4, 0 8" fill="#475569" />
 				</marker>
+				<!-- Glow Filter for Particles -->
+				<filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+					<feGaussianBlur stdDeviation="2.5" result="coloredBlur"/>
+					<feMerge>
+						<feMergeNode in="coloredBlur"/>
+						<feMergeNode in="SourceGraphic"/>
+					</feMerge>
+				</filter>
 			</defs>
 
+			<!-- 1. Connections -->
 			{#each connections as conn}
-				{@const start = getPos(conn.from)}
-				{@const end = getPos(conn.to)}
+				{@const path = getPath(conn)}
+				{@const sourceNode = nodes.find(n => n.id === conn.from)}
 				<path
-					d="M {start.x} {start.y} L {end.x - 80} {end.y}"
-					stroke="#e2e8f0"
-					stroke-width="2"
+					d={path}
+					stroke="#94a3b8"
+					stroke-width="3"
 					fill="none"
 					marker-end="url(#arrowhead)"
 				/>
-				<!-- Flow Animation Particle -->
-				{#if nodes.find((n) => n.id === conn.from).status === 'online'}
-					<circle r="4" fill="#38bdf8" class="flow-particle">
-						<animateMotion
-							dur="3s"
-							repeatCount="indefinite"
-							path="M {start.x} {start.y} L {end.x - 80} {end.y}"
-						/>
+				<!-- Flow Animation -->
+				{#if sourceNode.status === 'online'}
+					<circle r="5" fill="#0ea5e9" filter="url(#glow)">
+						<animateMotion dur="3s" repeatCount="indefinite" path={path} />
 					</circle>
-				{if}
+				{/if}
 			{/each}
 
-			<!-- Nodes -->
+			<!-- 2. Nodes -->
 			{#each nodes as node}
-				<foreignObject x={node.x} y={node.y} width="160" height="100">
-					<div class="node {node.status}">
-						<div class="node-icon">
-							<svelte:component this={node.icon} size={24} />
+				<g transform="translate({node.x}, {node.y})">
+					<!-- Border (Using SVG rect to prevent clipping) -->
+					<rect 
+						x="0" y="0" width={nodeW} height={nodeH} 
+						rx="12" ry="12"
+						fill="white"
+						stroke={node.status === 'online' ? '#0ea5e9' : '#ef4444'}
+						stroke-width="3"
+						class="node-rect {node.status}"
+					/>
+					
+					<!-- Content -->
+					<foreignObject x="0" y="0" width={nodeW} height={nodeH}>
+						<div class="node-content {node.status}">
+							<div class="icon-box">
+								<svelte:component this={node.icon} size={24} />
+							</div>
+							<div class="text-box">
+								<span class="name">{node.name}</span>
+								<span class="status-tag">{node.status}</span>
+							</div>
 						</div>
-						<div class="node-info">
-							<span class="name">{node.name}</span>
-							<span class="status-text">{node.status}</span>
-						</div>
-					</div>
-				</foreignObject>
+					</foreignObject>
+				</g>
 			{/each}
 		</svg>
 	</div>
 
 	<div class="legend">
-		<div class="legend-item"><span class="dot online"></span> Online</div>
-		<div class="legend-item"><span class="dot offline"></span> Offline</div>
+		<div class="legend-item"><span class="box online"></span> Online</div>
+		<div class="legend-item"><span class="box offline"></span> Offline</div>
 		<div class="legend-item"><span class="line"></span> Data Path</div>
-		<div class="legend-item"><span class="particle"></span> Active Flow</div>
+		<div class="legend-item"><span class="particle"></span> Active Stream</div>
 	</div>
 </div>
 
 <style>
-	header {
-		margin-bottom: 40px;
-	}
-
-	header h1 {
-		margin: 0;
-		font-size: 1.875rem;
-		color: #0f172a;
-	}
-
-	header p {
-		margin: 4px 0 0 0;
-		color: #64748b;
-	}
+	header { margin-bottom: 40px; }
+	header h1 { margin: 0; font-size: 1.875rem; color: #0f172a; }
+	header p { margin: 4px 0 0 0; color: #64748b; }
 
 	.canvas-container {
-		background: white;
-		border-radius: 16px;
-		box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+		background: #f8fafc;
+		border-radius: 20px;
 		padding: 40px;
-		overflow: auto;
 		display: flex;
 		justify-content: center;
+		border: 1px solid #e2e8f0;
+		box-shadow: inset 0 2px 4px 0 rgba(0, 0, 0, 0.05);
 	}
 
-	.node {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		justify-content: center;
-		background: #f8fafc;
-		border: 2px solid #e2e8f0;
-		border-radius: 12px;
-		padding: 12px;
-		width: 140px;
-		height: 80px;
+	svg { overflow: visible; }
+
+	.node-rect {
+		filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.05));
 		transition: all 0.3s;
 	}
 
-	.node.online {
-		border-color: #38bdf8;
-		background: #f0f9ff;
+	.node-rect.online {
+		fill: #f0f9ff;
 	}
 
-	.node.offline {
-		border-color: #ef4444;
-		opacity: 0.7;
+	.node-rect.offline {
+		fill: #fef2f2;
 	}
 
-	.node-icon {
-		margin-bottom: 8px;
+	.node-content {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 12px;
+		height: 100%;
+		padding: 0 16px;
+		pointer-events: none;
+	}
+
+	.icon-box {
 		color: #64748b;
+		display: flex;
+		align-items: center;
 	}
 
-	.node.online .node-icon {
-		color: #0ea5e9;
+	.node-content.online .icon-box { color: #0ea5e9; }
+	.node-content.offline .icon-box { color: #ef4444; }
+
+	.text-box {
+		display: flex;
+		flex-direction: column;
 	}
 
-	.node .name {
+	.name {
+		font-weight: 700;
 		font-size: 0.875rem;
-		font-weight: 600;
 		color: #1e293b;
 	}
 
-	.node .status-text {
-		font-size: 0.75rem;
+	.status-tag {
+		font-size: 0.7rem;
 		text-transform: uppercase;
-		font-weight: 700;
-		color: #94a3b8;
+		font-weight: 800;
+		letter-spacing: 0.025em;
 	}
 
-	.node.online .status-text {
-		color: #10b981;
-	}
+	.node-content.online .status-tag { color: #10b981; }
+	.node-content.offline .status-tag { color: #ef4444; }
 
-	.node.offline .status-text {
-		color: #ef4444;
-	}
-
-	.flow-particle {
-		filter: drop-shadow(0 0 4px #38bdf8);
-	}
-
+	/* Legend */
 	.legend {
 		margin-top: 32px;
 		display: flex;
 		gap: 24px;
 		justify-content: center;
 		background: white;
-		padding: 16px;
-		border-radius: 12px;
+		padding: 16px 32px;
+		border-radius: 9999px;
 		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+		border: 1px solid #e2e8f0;
 	}
 
 	.legend-item {
@@ -188,33 +217,17 @@
 		align-items: center;
 		gap: 8px;
 		font-size: 0.875rem;
-		color: #64748b;
+		font-weight: 600;
+		color: #475569;
 	}
 
-	.dot {
-		width: 8px;
-		height: 8px;
-		border-radius: 50%;
-	}
+	.box { width: 14px; height: 14px; border-radius: 4px; border: 2px solid; }
+	.box.online { background: #f0f9ff; border-color: #0ea5e9; }
+	.box.offline { background: #fef2f2; border-color: #ef4444; }
 
-	.dot.online {
-		background-color: #10b981;
-	}
-
-	.dot.offline {
-		background-color: #ef4444;
-	}
-
-	.line {
-		width: 24px;
-		height: 2px;
-		background-color: #e2e8f0;
-	}
-
-	.particle {
-		width: 8px;
-		height: 8px;
-		background-color: #38bdf8;
-		border-radius: 50%;
+	.line { width: 24px; height: 3px; background: #94a3b8; border-radius: 2px; }
+	.particle { 
+		width: 8px; height: 8px; background: #0ea5e9; border-radius: 50%; 
+		box-shadow: 0 0 8px #0ea5e9;
 	}
 </style>
