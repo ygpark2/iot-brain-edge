@@ -1,437 +1,198 @@
 # IOT-BRAIN-EDGE
 
-센서 하드웨어(GRF / 압력 센서 / 3D 스캐너)를 실시간 인사이트로 연결하는 오픈소스 "Brain" 플랫폼입니다.
+센서 이벤트를 엣지에서 수집하고 Kafka 스트리밍, ClickHouse 저장, 운영용 대시보드까지 연결하는 오픈소스 파이프라인입니다.
 
-## 개요
+## 저장소 구성
 
-이 프로젝트는 엣지 디바이스에서 수집된 센서 데이터를 실시간으로 처리하고, 머신러닝 모델을 통해 분석하며, 결과를 시계열 데이터베이스에 저장하는 엔드투엔드 데이터 파이프라인을 제공합니다.
+- `proto/`: 공통 이벤트 스키마와 계약
+- `core/`: 공통 도메인 코드와 유틸리티
+- `edge-agent/`: 로컬 스풀, HTTP 모드, Kafka 모드를 지원하는 Pekko 기반 엣지 런타임
+- `services/ingestion-service/`: HTTP 수집 API와 처리된 토픽의 ClickHouse 적재 담당
+- `services/processor-service/`: `rawframes` 토픽을 읽어 ClickHouse에 저장하는 서비스
+- `services/inference-service/`: Kafka 컨슈머와 REST API를 가진 Python 추론 서비스
+- `services/alert-service/`: 알림 Kafka 토픽을 읽어 Webhook으로 전달하는 서비스
+- `pipelines/flink-jobs/`: 세션화, 피처 추출, 집계, 추론 트리거용 Flink 잡
+- `dashboard/`: SvelteKit 기반 운영 대시보드
+- `deploy/`: Swarm 스택, ClickHouse 스키마, 스토리지 설정
+- `docs/`: 아키텍처 및 운영 메모
+- `notebooks/`: 예제 노트북 자산
 
-## 모듈
+## 현재 기본 실행 형태
 
-- **proto/**: **단일 소스** 공통 계약 (모든 모듈이 공유하는 Protobuf 스키마 정의)
-- **core/**: 공통 도메인 모델 및 유틸리티
-- **edge-agent/**: Pekko 기반 엣지 런타임 (디바이스 상태 관리 + 스트림 파이프라인)
-- **services/ingestion-service/**: Pekko HTTP 수집 API (HTTP → Kafka)
-- **services/inference-service/**: Python 모델 서빙 (FastAPI + Kafka)
-- **services/alert-service/**: 알림 처리 서비스 (Kafka → Webhook)
-- **dashboard/**: SvelteKit 기반 관리 대시보드
-  - **실시간 모니터링**: 전체 시스템 처리량 및 서비스 상태 시각화
-  - **장치 관리 (CRUD)**: 엣지 디바이스 등록 및 설정 관리
-  - **Pipeline Topology**: 서비스 간 연결 상태 및 데이터 흐름 시각화
-  - **Message Inspector**: Kafka 메시지(Protobuf) 실시간 샘플링 및 JSON 디코딩
-  - **Trace Timeline**: 특정 세션 ID의 전체 데이터 여정 추적
-- **deploy/**: 인프라 및 배포 자산 (Docker Swarm, ClickHouse 스키마 초기화)
-- **docs/**: 아키텍처 및 운영 노트
-- **pipelines/flink-jobs/**: Apache Flink 데이터 처리 잡 (**Pure Scala** 기반)
+현재 `deploy/swarm/stack.yml` 기준 기본 Swarm 스택에는 다음 서비스가 포함됩니다.
 
-## 관리 대시보드 화면
+- Kafka
+- Kafka UI
+- MinIO
+- ClickHouse
+- `ingestion-service`
+- `processor-service`
+- dashboard
+- notebook
 
-관리 대시보드는 운영 모니터링, 디바이스 관리, 메시지 디버깅, 시스템 설정을 위한 화면을 제공합니다.
+반면 `inference-service`, `alert-service`, Flink 잡은 저장소에는 존재하지만, 현재 `make stack-up`에 포함되지는 않습니다. 필요 시 별도로 실행해야 합니다.
 
-### Dashboard
+## 대시보드
+
+관리 대시보드는 이제 API 중심 구조입니다.
+
+- 브라우저가 Kafka나 ClickHouse에 직접 붙지 않음
+- `dashboard/src/routes/api/` 아래 SvelteKit 서버 API가 단일 데이터 접근 계층 역할 수행
+- `Message Inspector`는 하이브리드 구조:
+  - `Live`: 서버 측 Kafka client 사용
+  - `History`: 서버 API를 통한 ClickHouse 조회
+- `Settings`는 서버 API를 통해 ClickHouse TTL과 S3 cold-storage 설정을 변경
+
+### 화면 예시
+
+**Dashboard**
 
 ![Dashboard Overview](docs/images/dashboard.png)
 
-### Devices
+**Devices**
 
 ![Devices](docs/images/devices.png)
 
-### Message Inspector
+**Message Inspector**
 
 ![Message Inspector](docs/images/message_inspector.png)
 
-### Pipeline Topology
+**Pipeline Topology**
 
 ![Pipeline Topology](docs/images/topology.png)
 
-### Trace Timeline
+**Trace Timeline**
 
 ![Trace Timeline](docs/images/trace.png)
 
-### Settings
+**Settings**
 
 ![Settings](docs/images/settings.png)
 
-## 시스템 아키텍처
+## 데이터 흐름
 
-### 전체 구조
+### 1. HTTP 수집 경로
 
-```
-┌─────────────┐     ┌──────────────┐     ┌─────────┐
-│  센서/Mock  │────▶│  edge-agent  │────▶│  Kafka  │ (Protobuf: EventEnvelope)
-└─────────────┘     └──────────────┘     └─────────┘
-                                               │
-                                               ▼
-                                        ┌─────────────┐
-                                        │    Flink    │ (Protobuf Deserialize)
-                                        │  Processing │
-                                        └─────────────┘
-                                               │
-                    ┌──────────────────────────┼───────────────────────┐
-                    ▼                          ▼                       ▼
-          ┌──────────────────┐      ┌─────────────────┐     ┌─────────────────┐
-          │  inference-      │      │  ClickHouse     │     │  alert-service  │
-          │  service         │      │  Writer Job     │     │                 │
-          └──────────────────┘      └─────────────────┘     └─────────────────┘
-           (Protobuf Req/Res)       (Final Data Storage)    (JSON/Webhook Out)
-                    │                          │
-                    └────────────┬─────────────┘
-                                 ▼
-                          ClickHouse
-```
+`edge-agent (HTTP 모드)` -> `ingestion-service /v1/ingest` -> Kafka `rawframes`
 
-### 데이터 스키마 및 직렬화
+이 경로는 브리지 역할만 하며, ClickHouse에 직접 쓰지 않습니다.
 
-이 플랫폼은 전 구간에서 **Protocol Buffers (Protobuf)**를 사용하여 고성능 직렬화를 수행합니다.
+### 2. Raw frame 저장 경로
 
-- **EventEnvelope (proto/brain_events.proto)**: 모든 데이터의 공통 래퍼입니다. 이벤트 ID, 장치 ID, 센서 타입, 타임스탬프 및 실제 데이터를 담는 `payload` 바이트 필드를 포함합니다.
-- **주요 데이터 유형 (Payload contents)**:
-  - **RawFrame**: 기기에서 수집된 원래의 센서 데이터 프레임
-  - **WindowFeature**: 윈도우 집계(평균, 카운트 등)를 통해 요약된 데이터
-  - **SessionFeature**: 세션 단위로 그룹화되어 추출된 특징값
-  - **InferenceRequest/Result**: 머신러닝 모델 추론을 위한 요청 및 결과 데이터
+Kafka `rawframes` -> `processor-service` -> ClickHouse `brain.rawframes`
 
-### 핵심 컴포넌트
+### 3. 처리 완료 토픽 저장 경로
 
-#### 1. Edge Agent
-- 센서 또는 Mock 소스에서 데이터 수집
-- 로컬 디스크에 데이터 스풀링 (연결 복구를 위해)
-- Kafka로 데이터 발행 (또는 HTTP로 Ingestion Service에 전송)
-- Pekko Actor 기반 분산 처리
+다음 Kafka 토픽:
 
-#### 2. Kafka
-- 분산 메시지 브로커로 데이터 스트림 버퍼링
-- 내결함성과 확장성 제공
-- 여러 토픽으로 파이프라인 분리
+- `rawframes-processed`
+- `session-features`
+- `inference-results`
+- `inference-alerts`
+- `env-features`
+- `power-features`
 
-#### 3. Apache Flink
-- 실시간 스트림 처리 엔진
-- **세셔나이저**: 연속된 프레임을 세션으로 그룹화
-- **피처 추출**: 다양한 도메인별 피처 추출 (기본, 건강, 파워, 환경)
-- **윈도우 집계**: 환경 및 전력 데이터에 대한 시간 윈도우 기반 평균 집계 (env-aggregator, power-aggregator)
-- **인퍼런스 트리거**: 추론 요청 생성 및 발행
+은 `ingestion-service`가 소비해서 대응하는 ClickHouse 테이블에 저장합니다. 이 경로에는 재시도와 DLQ 처리 로직이 들어 있습니다.
 
-#### 4. Inference Service
-- **Kafka 컨슈머**: `inference-requests` 토픽에서 요청 수신
-- **FastAPI REST**: `/v1/infer` 엔드포인트로 직접 추론 지원
-- **모델 서빙**: 현재는 데모 모델 (평균 계산)
-- **결과 발행**: `inference-results` 토픽
-- **알림 발행**: 점수가 임계값(기본 0.7) 초과 시 `inference-alerts` 토픽 발행
+### 4. 선택적 분석 경로
 
-#### 5. ClickHouse
-- 고성능 시계열 데이터베이스
-- 원시 프레임, 세션 피처, 추론 결과, 알림 저장
-- ReplacingMergeTree 엔진으로 중복 제거
+위 파생 토픽은 Flink 잡과 `inference-service`가 생성합니다. 관련 코드는 저장소에 있지만 현재 기본 스택에서는 수동/선택 실행입니다.
 
-#### 6. Ingestion Service
-- HTTP 수집 엔드포인트 제공
-- Kafka 컨슈머로 메시지 처리
-- ClickHouse Writer로 데이터 지속
-- DLQ(Dead Letter Queue) 지원으로 내결함성 보장
-
-## 데이터 플로우
-
-### 기본 파이프라인 (Kafka 기반)
-
-```
-센서/Mock 
-  → edge-agent (로컬 스풀) 
-  → Kafka (rawframes 토픽)
-  → Flink Sessionizer (세션 생성)
-  → Flink Feature Extractors (피처 추출)
-  → Flink Inference Trigger (추론 요청)
-  → inference-service (추론 실행)
-  → Kafka (inference-results 토픽)
-  → Flink ClickHouse Writer (결과 저장)
-  → ClickHouse
-```
-
-### HTTP 수집 경로
-
-```
-HTTP 요청 
-  → ingestion-service (HTTP 수집)
-  → ClickHouse (직접 저장)
-```
-
-### 알림 파이프라인
-
-```
-inference-service 
-  → Kafka (inference-alerts 토픽)
-  → alert-service 
-  → Webhook (외부 시스템 알림)
-```
-
-### ClickHouse 스키마
-
-- **rawframes**: 원시 센서 데이터
-- **session_features**: 세션별 집계 피처
-- **inference_results**: 모델 추론 결과
-- **inference_alerts**: 임계값 초과 알림
-
-## 시작하기
+## 빠른 시작
 
 ### 전제 조건
 
-- Docker (Swarm 모드 활성화)
-- sbt (Scala 빌드 툴)
-- Python 3.9+ (inference-service용)
+- Docker with Swarm enabled
+- `sbt`
+- Python 3.9+ (`services/inference-service`용)
 
-### 인프라 구동 (Kafka, ClickHouse, Flink)
+### 1. Swarm 초기화
 
 ```bash
-# Docker Swarm 초기화
 docker swarm init
+```
 
-# 스택 배포
+### 2. 필요한 경우 로컬 이미지 빌드
+
+로컬 Docker에 서비스 이미지가 없으면 먼저 빌드합니다.
+
+```bash
+make build-ingest
+make build-processor
+```
+
+### 3. 기본 스택 기동
+
+```bash
 make stack-up
 ```
 
-이 명령어는 다음을 포함합니다:
-- Kafka (메시지 브로커)
-- Kafka UI (http://localhost:8089)
-- ClickHouse (데이터베이스)
-- Flink JobManager (http://localhost:8081)
-- Flink TaskManager
+이 명령은 Swarm 스택 배포와 ClickHouse 스키마 초기화를 함께 수행합니다.
 
-### ClickHouse 스키마 초기화
+### 4. Kafka 토픽 생성
+
+현재 스택에서는 Kafka 자동 토픽 생성 기능이 꺼져 있으므로 명시적으로 생성해야 합니다.
 
 ```bash
-make ch-init
+make create-kafka-topics
 ```
 
-이 단계는 idempotent하므로 안전하게 재실행할 수 있습니다.
+### 5. 데이터 생성
 
-### Kafka 토픽 생성
-
-```bash
-# 기본 토픽
-make kafka-init
-
-# 전체 파이프라인 토픽 (Flink, Inference 포함)
-make topics-pipeline
-```
-
-### 서비스 실행
-
-#### 1) Ingestion Service (HTTP → Kafka)
-
-```bash
-make run-ingest
-```
-
-#### 2) Alert Service (Kafka → Webhook)
-
-```bash
-make run-alert
-```
-
-#### 3) Edge Agent (Kafka 모드)
-
-```bash
-make run-edge-kafka
-```
-
-#### 4) Edge Agent (HTTP 모드)
+HTTP 모드:
 
 ```bash
 make run-edge-http
 ```
 
-## Flink 잡 실행
-
-Flink 잡은 개별적으로 실행되며, 파이프라인 구성에 따라 순서대로 실행해야 합니다.
-
-### 유닛 테스트
-
-```bash
-sbt "project flinkJobs" test
-```
-
-### 클러스터 제출 (Flink UI에 표시됨)
-
-전체 잡 제출:
-```bash
-make run-all-flink
-```
-
-개별 잡 제출:
-```bash
-make run-flink-cluster JOB=sessionizer
-```
-
-### 세셔나이저
-
-```bash
-sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner sessionizer"
-```
-
-YAML 설정 파일 사용:
-```bash
-export FLINK_CONFIG_YAML=./deploy/flink/flink.yml
-sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner sessionizer"
-```
-
-### 피처 추출기
-
-```bash
-sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner feature-base"
-sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner feature-health"
-sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner feature-power"
-sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner feature-env"
-```
-
-### 윈도우 집계
-
-```bash
-sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner env-aggregator"
-sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner power-aggregator"
-```
-
-### 인퍼런스 트리거
-
-```bash
-sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner inference-trigger"
-```
-
-### ClickHouse Writer
-
-```bash
-sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner clickhouse-ingest"
-```
-
-## Inference Service 실행
-
-### 의존성 설치
-
-```bash
-cd services/inference-service
-pip install -r requirements.txt
-```
-
-### 서비스 시작
-
-```bash
-uvicorn main:app --reload --port 8090
-```
-
-환경 변수 설정 (선택사항):
-```bash
-export INFERENCE_KAFKA_BOOTSTRAP_SERVERS=localhost:9094
-export INFERENCE_REQUESTS_TOPIC=inference-requests
-export INFERENCE_RESULTS_TOPIC=inference-results
-export INFERENCE_ALERTS_TOPIC=inference-alerts
-export MODEL_VERSION=demo-v1
-export INFERENCE_ALERT_THRESHOLD=0.7
-```
-
-### API 사용 예시
-
-```bash
-curl -X POST "http://localhost:8090/v1/infer" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "device_id": "device-001",
-    "session_id": "session-123",
-    "sensor_type": "GRF",
-    "start_ts_ms": 1737540000000,
-    "end_ts_ms": 1737540050000,
-    "feature_schema_version": "v1",
-    "features": [0.1, 0.2, 0.3, 0.4, 0.5]
-  }'
-```
-
-## 엔드투엔드 테스트
-
-### 1) 인프라 시작 및 스키마 초기화
-
-```bash
-make stack-up
-make ch-init
-make kafka-init
-make topics-pipeline
-```
-
-### 2) Ingestion Service 실행
-
-```bash
-make run-ingest
-```
-
-### 3) Alert Service 실행
-
-```bash
-make run-alert
-```
-
-### 4) Flink 잡 실행
-
-별도 터미널에서 실행:
-
-```bash
-# 세셔나이저
-sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner sessionizer"
-
-# 피처 추출기 (각각 별도 터미널)
-sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner feature-base"
-sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner feature-health"
-sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner inference-trigger"
-
-# ClickHouse Writer
-sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner clickhouse-ingest"
-```
-
-### 5) Inference Service 실행
-
-```bash
-cd services/inference-service
-pip install -r requirements.txt
-uvicorn main:app --reload --port 8090
-```
-
-### 6) Edge Agent 실행
+Kafka 모드:
 
 ```bash
 make run-edge-kafka
 ```
 
-### 7) 데이터 검증
-
-ClickHouse에서 데이터 확인:
+### 6. UI 접속
 
 ```bash
-# 원시 프레임 수
-curl -s "http://localhost:8123/?query=SELECT%20count()%20FROM%20brain.rawframes" && echo
-
-# 세션 피처 수
-curl -s "http://localhost:8123/?query=SELECT%20count()%20FROM%20brain.session_features" && echo
-
-# 추론 결과 수
-curl -s "http://localhost:8123/?query=SELECT%20count()%20FROM%20brain.inference_results" && echo
-
-# 알림 수
-curl -s "http://localhost:8123/?query=SELECT%20count()%20FROM%20brain.inference_alerts" && echo
+make dashboard-ui
+make kafka-ui
+make clickhouse-ui
+make notebook-ui
 ```
 
-카운트가 증가하면 파이프라인이 정상 작동 중입니다.
+기본 주소:
 
-## 모니터링 및 UI
+- Dashboard: `http://localhost:5173`
+- Kafka UI: `http://localhost:8089`
+- ClickHouse HTTP: `http://localhost:8123`
+- Notebook: `http://localhost:8888?token=brain`
 
-### UI 접속
+## 자주 쓰는 명령
+
+### 스택과 스키마
 
 ```bash
-# Kafka UI
-make kafka-ui
-# 접속: http://localhost:8089
+make stack-up
+make stack-down
+make stack-ps
+make ch-init
+```
 
-# ClickHouse UI
-make clickhouse-ui
-# 접속: http://localhost:8123
+### Kafka 토픽
 
-# Flink UI
-make flink-ui
-# 접속: http://localhost:8081
+```bash
+make create-kafka-topics
+make topic-list
+```
+
+### 로컬 서비스 실행
+
+```bash
+make run-ingest
+make run-processor
+make run-alert
+make run-edge-http
+make run-edge-kafka
 ```
 
 ### 로그 확인
@@ -440,86 +201,68 @@ make flink-ui
 make logs-kafka
 make logs-kafka-ui
 make logs-clickhouse
-make logs-flink
+make logs-notebook
 ```
 
-## ClickHouse 스키마 관리
+## 파이프라인 검증
 
-### 스키마 파일 구조
-
-```
-deploy/clickhouse/schema/
-├── 001_init.sql           # 데이터베이스 및 기본 테이블
-├── 002_add_envelope_columns.sql
-├── 003_session_features.sql
-├── 004_inference_results.sql
-└── 005_inference_alerts.sql
-```
-
-### 권장 네이밍 컨벤션
-
-0으로 채워진 숫자 접두사를 사용하여 파일이 올바른 순서로 적용되도록 합니다:
-
-```
-001_init.sql
-002_add_columns.sql
-003_indexes.sql
-010_materialized_views.sql
-```
-
-### 스키마 초기화
+ClickHouse row 수 확인:
 
 ```bash
-make ch-init
+curl -s "http://localhost:8123/?query=SELECT%20count()%20FROM%20brain.rawframes" && echo
+curl -s "http://localhost:8123/?query=SELECT%20count()%20FROM%20brain.session_features" && echo
+curl -s "http://localhost:8123/?query=SELECT%20count()%20FROM%20brain.inference_results" && echo
+curl -s "http://localhost:8123/?query=SELECT%20count()%20FROM%20brain.inference_alerts" && echo
 ```
 
-모든 스키마 파일은 idempotent해야 합니다 (`IF NOT EXISTS` 사용).
-
-### 특정 스키마만 적용
+최근 rawframes 확인:
 
 ```bash
-export CLICKHOUSE_SCHEMA_GLOB="001_*.sql"
-make ch-init
+make ch-tail
 ```
 
-## 문제 해결
+## Flink 및 Inference
 
-### Kafka 연결 실패
+저장소에는 Flink 잡과 Python inference 서비스가 그대로 포함되어 있습니다.
+
+Flink 잡 로컬 실행:
 
 ```bash
-# Kafka 상태 확인
-docker service ls | grep kafka
-
-# 로그 확인
-make logs-kafka
+sbt "project flinkJobs" test
+make run-flink JOB=sessionizer
+make run-flink JOB=feature-base
+make run-flink JOB=inference-trigger
 ```
 
-### ClickHouse 연결 실패
+Python inference 서비스 실행:
 
 ```bash
-# ClickHouse 로그 확인
-make logs-clickhouse
-
-# 스키마 재초기화
-make ch-init
+cd services/inference-service
+pip install -r requirements.txt
+uvicorn main:app --reload --port 8090
 ```
 
-### Flink 잡 실패
+유용한 환경 변수:
 
 ```bash
-# Flink JobManager 로그
-make logs-flink
-
-# Flink UI에서 잭 상태 확인
-make flink-ui
+export INFERENCE_KAFKA_BOOTSTRAP_SERVERS=localhost:9094
+export INFERENCE_REQUESTS_TOPIC=inference-requests
+export INFERENCE_RESULTS_TOPIC=inference-results
+export INFERENCE_ALERTS_TOPIC=inference-alerts
+export MODEL_VERSION=brain-v1-stable
+export INFERENCE_ALERT_THRESHOLD=0.8
 ```
+
+## ClickHouse Storage 및 TTL
+
+현재 대시보드 `Settings` 페이지는 다음 항목을 관리합니다.
+
+- `rawframes`, `session_features`, `inference_results`, `inference_alerts`, `env_features`, `power_features`의 TTL
+- `deploy/clickhouse/config/storage.xml`에 기록되는 S3 호환 cold-storage 설정
+
+설정 변경 후 서버는 `SYSTEM RELOAD CONFIG`를 호출해 ClickHouse 설정을 다시 읽게 합니다.
 
 ## 추가 문서
 
-- [아키텍처 상세](./docs/architecture.md)
-- [운영 하드닝 체크리스트](./docs/issues.md)
-- [AGENTS 사용 가이드](./AGENTS.md)
-
-## 라이선스
-
-[라이선스 정보가 여기에 포함됩니다]
+- [아키텍처](docs/architecture.md)
+- [운영 상태 및 남은 과제](docs/issues.md)
