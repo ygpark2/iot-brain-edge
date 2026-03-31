@@ -1,243 +1,212 @@
 # IOT-BRAIN-EDGE
 
-Open-source "Brain" platform that connects sensor hardware (GRF / plantar pressure / 3D scanner) to actionable insights.
+Open-source edge-to-cloud pipeline for sensor events, Kafka streaming, ClickHouse storage, and operational dashboards.
 
-## Modules
-- **proto/**: **Single Source of Truth** for shared contracts (Protobuf definitions)
-- **core/**: shared domain + utilities
-- **edge-agent/**: Pekko-based edge runtime (device state + stream pipeline)
-- **services/ingestion-service/**: Pekko HTTP ingest API
-- **services/inference-service/**: Python model serving skeleton
-- **dashboard/**: SvelteKit-based admin dashboard
-  - **Real-time Monitoring**: System throughput and service health visualization.
-  - **Device Management (CRUD)**: Register and configure edge devices.
-  - **Pipeline Topology**: Interactive map of service connectivity and data flow.
-  - **Message Inspector**: Real-time Kafka message sampling and Protobuf-to-JSON decoding.
-  - **Trace Timeline**: End-to-end journey tracking for specific session IDs.
-  - **pipelines/flink-jobs/**: Apache Flink data processing jobs (**Pure Scala**)
+## What Is In The Repo
 
-  ## Dashboard & Analytics
+- `proto/`: shared contracts and event schema
+- `core/`: shared domain code and utilities
+- `edge-agent/`: Pekko-based edge runtime with local spool, HTTP mode, and Kafka mode
+- `services/ingestion-service/`: HTTP ingest API and processed-topic ClickHouse writer
+- `services/processor-service/`: raw `rawframes` Kafka consumer that persists into ClickHouse
+- `services/inference-service/`: Python inference service with Kafka consumer and REST endpoint
+- `services/alert-service/`: Kafka alert consumer and webhook sender
+- `pipelines/flink-jobs/`: Flink jobs for sessionizing, feature extraction, aggregation, and inference triggering
+- `dashboard/`: SvelteKit admin dashboard
+- `deploy/`: Swarm stack, ClickHouse schema, and storage config
+- `docs/`: architecture and operational notes
+- `notebooks/`: example notebook assets
 
-  The Brain Edge Dashboard provides a comprehensive interface for system monitoring, data lifecycle management, and advanced analytics.
+## Current Runtime Shape
 
-  ### 1. Pipeline Topology
-  Real-time visualization of the entire data pipeline, mapping services to specific Kafka topics.
-  - **Visual Flow**: Animated particles show active data streams.
-  - **Stage Mapping**: Clear separation between Ingestion, Processing (Flink), and Consumption (Inference/ClickHouse).
-  - **Back-loops**: Precise routing for feedback loops like inference alerts.
+The current default Swarm stack in `deploy/swarm/stack.yml` includes:
 
-  > ![Pipeline Topology Placeholder](docs/images/topology.png)
-  > *Note: End-to-end data flow from Edge Agent to ClickHouse via Kafka topics.*
+- Kafka
+- Kafka UI
+- MinIO
+- ClickHouse
+- `ingestion-service`
+- `processor-service`
+- dashboard
+- notebook
 
-  ### 2. Data Archiving (S3 & TTL)
-  Manage your data retention policy and cold storage settings directly from the UI.
-  - **Tiered Storage**: Move aged data (e.g., > 30 days) from local hot storage to AWS S3 / MinIO.
-  - **Dynamic Config**: Update S3 endpoints and credentials without restarting ClickHouse.
-  - **Retention Control**: Set per-table TTL (Time-To-Live) for automatic archiving.
+`inference-service`, `alert-service`, and Flink jobs exist in the repo, but they are not started by `make stack-up` today. Run them separately when needed.
 
-  ### 3. Spark Notebook Integration
-  Integrated Jupyter environment for deep-dive analysis using PySpark.
-  - **Direct Access**: One-click jump to Spark Notebooks with pre-configured ClickHouse connectors.
-  - **Pre-built Templates**: Sample notebooks for querying raw frames and session features.
+## Dashboard
 
-  ### 4. Admin Dashboard Screenshots
-  The dashboard includes dedicated views for operations, debugging, and system control.
+The admin dashboard is now API-driven.
 
-  **Overview Dashboard**
+- Browser pages do not connect directly to Kafka or ClickHouse
+- SvelteKit server routes under `dashboard/src/routes/api/` act as the only data access layer
+- `Message Inspector` is hybrid:
+  - `Live`: Kafka via server-side Kafka client
+  - `History`: ClickHouse via server API
+- `Settings` updates ClickHouse storage config and TTL policy through server APIs
 
-  ![Dashboard Overview](docs/images/dashboard.png)
+### Screenshots
 
-  **Devices**
+**Dashboard**
 
-  ![Devices](docs/images/devices.png)
+![Dashboard Overview](docs/images/dashboard.png)
 
-  **Message Inspector**
+**Devices**
 
-  ![Message Inspector](docs/images/message_inspector.png)
+![Devices](docs/images/devices.png)
 
-  **Pipeline Topology**
+**Message Inspector**
 
-  ![Pipeline Topology](docs/images/topology.png)
+![Message Inspector](docs/images/message_inspector.png)
 
-  **Trace Timeline**
+**Pipeline Topology**
 
-  ![Trace Timeline](docs/images/trace.png)
+![Pipeline Topology](docs/images/topology.png)
 
-  **Settings**
+**Trace Timeline**
 
-  ![Settings](docs/images/settings.png)
+![Trace Timeline](docs/images/trace.png)
 
-  ## System Architecture
-  ...
-### Overview
+**Settings**
 
+![Settings](docs/images/settings.png)
+
+## Data Flow
+
+### 1. HTTP ingest path
+
+`edge-agent (HTTP mode)` -> `ingestion-service /v1/ingest` -> Kafka topic `rawframes`
+
+This path is a bridge only. It does not write directly to ClickHouse.
+
+### 2. Raw frame persistence
+
+Kafka topic `rawframes` -> `processor-service` -> ClickHouse table `brain.rawframes`
+
+### 3. Processed-topic persistence
+
+Kafka topics:
+
+- `rawframes-processed`
+- `session-features`
+- `inference-results`
+- `inference-alerts`
+- `env-features`
+- `power-features`
+
+are consumed by `ingestion-service` and written into the matching ClickHouse tables with retry and DLQ handling.
+
+### 4. Optional analytics path
+
+Flink jobs and `inference-service` produce the derived topics above. Those pieces are present in the repo, but they are optional/manual in the current setup.
+
+## Quick Start
+
+### Prerequisites
+
+- Docker with Swarm enabled
+- `sbt`
+- Python 3.9+ for `services/inference-service`
+
+### 1. Initialize Swarm
+
+```bash
+docker swarm init
 ```
-┌─────────────┐     ┌──────────────┐     ┌─────────┐
-│ Sensors/Mock│────▶│  edge-agent  │────▶│  Kafka  │ (Protobuf: EventEnvelope)
-└─────────────┘     └──────────────┘     └─────────┘
-                                               │
-                                               ▼
-                                        ┌─────────────┐
-                                        │    Flink    │ (Protobuf Deserialize)
-                                        │  Processing │
-                                        └─────────────┘
-                                               │
-                    ┌──────────────────────────┼───────────────────────┐
-                    ▼                          ▼                       ▼
-          ┌──────────────────┐      ┌─────────────────┐     ┌─────────────────┐
-          │  inference-      │      │  ClickHouse     │     │  alert-service  │
-          │  service         │      │  Writer Job     │     │                 │
-          └──────────────────┘      └─────────────────┘     └─────────────────┘
-           (Protobuf Req/Res)       (Final Data Storage)    (JSON/Webhook Out)
-                    │                          │
-                    └────────────┬─────────────┘
-                                 ▼
-                          ClickHouse
+
+### 2. Build local service images if needed
+
+If the local Docker daemon does not already have the application images:
+
+```bash
+make build-ingest
+make build-processor
 ```
 
-### Data Schema & Serialization
-
-This platform uses **Protocol Buffers (Protobuf)** across all stages for high-performance serialization.
-
-- **EventEnvelope (proto/brain_events.proto)**: The common wrapper for all data. It includes `event_id`, `device_id`, `sensor_type`, timestamps, and a `payload` byte field for the actual data.
-- **Key Data Types (Payload contents)**:
-  - **RawFrame**: Original sensor data frame from devices.
-  - **WindowFeature**: Summary data aggregated over time windows (mean, count, etc.).
-  - **SessionFeature**: Feature values extracted by grouping data into sessions.
-  - **InferenceRequest/Result**: Request and result data for ML model inference.
-
-### Start infrastructure (Kafka, ClickHouse, etc.)
+### 3. Start the default stack
 
 ```bash
 make stack-up
 ```
 
-### Initialize ClickHouse schema
+This deploys the Swarm stack and runs ClickHouse schema initialization.
+
+### 4. Create Kafka topics
+
+Kafka auto-create is disabled in the stack. Create topics explicitly:
 
 ```bash
-make ch-init
+make create-kafka-topics
 ```
 
-> This step is idempotent and can be safely re-run.
+### 5. Generate data
 
-### Run ingestion service (HTTP → Kafka)
-
-```bash
-make run-ingest
-```
-
-### Run alert service (Kafka → webhook)
-
-```bash
-make run-alert
-```
-
-### Run edge agent (Kafka mode)
-
-```bash
-make run-edge-kafka
-```
-
-### Run edge agent (HTTP mode)
+HTTP mode:
 
 ```bash
 make run-edge-http
 ```
 
-## End-to-end test (Kafka → Flink → Kafka → ClickHouse)
-
-> Note: ClickHouse ingestion currently happens via `ingestion-service`.
-
-### 1) Start infra and init schemas
-
-```bash
-make stack-up
-make ch-init
-make kafka-init
-make topics-pipeline
-```
-
-### 2) Run ingestion-service (HTTP ingest only)
-
-```bash
-make run-ingest
-```
-
-### 2b) Run alert-service (alerts → webhook)
-
-```bash
-make run-alert
-```
-
-### 3) Run Flink jobs (JobRunner + spec)
-
-### Unit Testing
-
-```bash
-sbt "project flinkJobs" test
-```
-
-Submit to Flink cluster (shows in Flink UI):
-```bash
-make run-all-flink
-```
-
-Submit a single job to the cluster:
-```bash
-make run-flink-cluster JOB=sessionizer
-```
-
-Sessionizer:
-```bash
-sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner sessionizer"
-```
-
-YAML config example:
-```bash
-export FLINK_CONFIG_YAML=./deploy/flink/flink.yml
-sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner sessionizer"
-```
-
-Feature splitters:
-```bash
-sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner feature-base"
-sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner feature-health"
-sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner feature-power"
-sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner feature-env"
-```
-
-### Window Aggregators
-
-```bash
-sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner env-aggregator"
-sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner power-aggregator"
-```
-
-Inference trigger:
-```bash
-sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner inference-trigger"
-```
-
-ClickHouse writer:
-```bash
-sbt "project flinkJobs" "runMain com.ainsoft.brain.flink.jobs.JobRunner clickhouse-ingest"
-```
-
-### 4) Run inference-service (Kafka consumer + results/alerts)
-
-```bash
-cd services/inference-service
-pip install -r requirements.txt
-uvicorn main:app --reload --port 8090
-```
-
-### 5) Run edge-agent (Kafka producer)
+Kafka mode:
 
 ```bash
 make run-edge-kafka
 ```
 
-### 6) Verify data in ClickHouse
+### 6. Open the UIs
+
+```bash
+make dashboard-ui
+make kafka-ui
+make clickhouse-ui
+make notebook-ui
+```
+
+Default URLs:
+
+- Dashboard: `http://localhost:5173`
+- Kafka UI: `http://localhost:8089`
+- ClickHouse HTTP: `http://localhost:8123`
+- Notebook: `http://localhost:8888?token=brain`
+
+## Common Commands
+
+### Stack and schema
+
+```bash
+make stack-up
+make stack-down
+make stack-ps
+make ch-init
+```
+
+### Kafka topics
+
+```bash
+make create-kafka-topics
+make topic-list
+```
+
+### Local services
+
+```bash
+make run-ingest
+make run-processor
+make run-alert
+make run-edge-http
+make run-edge-kafka
+```
+
+### Logs
+
+```bash
+make logs-kafka
+make logs-kafka-ui
+make logs-clickhouse
+make logs-notebook
+```
+
+## Verifying The Pipeline
+
+Check ClickHouse row counts:
 
 ```bash
 curl -s "http://localhost:8123/?query=SELECT%20count()%20FROM%20brain.rawframes" && echo
@@ -246,61 +215,54 @@ curl -s "http://localhost:8123/?query=SELECT%20count()%20FROM%20brain.inference_
 curl -s "http://localhost:8123/?query=SELECT%20count()%20FROM%20brain.inference_alerts" && echo
 ```
 
-If counts increase, the flow is working end-to-end.
-
-### View logs
+Tail recent rawframes:
 
 ```bash
-make logs-ingest
-make logs-ch
+make ch-tail
 ```
 
-### Access UIs
+## Flink And Inference
+
+The repository still contains Flink jobs and the Python inference service.
+
+Run Flink jobs locally:
 
 ```bash
-make kafka-ui
-make clickhouse-ui
-make flink-ui
+sbt "project flinkJobs" test
+make run-flink JOB=sessionizer
+make run-flink JOB=feature-base
+make run-flink JOB=inference-trigger
 ```
 
-## ClickHouse schema initialization tips
-
-The ClickHouse schema initializer (`deploy/clickhouse/init.sh`) supports applying **multiple schema files in order** using filename sorting.
-
-### Recommended naming convention
-
-Use zero-padded numeric prefixes so files are applied in the correct order:
-
-```
-001_init.sql
-002_add_columns.sql
-003_indexes.sql
-010_materialized_views.sql
-```
-
-They will be executed in lexicographical order (which matches numeric order if zero-padded).
-
-### Limiting which schemas are applied
-
-You can control which schema files are applied by setting the glob pattern via environment variables:
+Run the Python inference service:
 
 ```bash
-export CLICKHOUSE_SCHEMA_GLOB="00*.sql"
-make ch-init
+cd services/inference-service
+pip install -r requirements.txt
+uvicorn main:app --reload --port 8090
 ```
 
-Or in `.env`:
-
-```env
-CLICKHOUSE_SCHEMA_GLOB=001_*.sql
-```
-
-### Re-applying schemas
-
-All schema files should be **idempotent** (use `IF NOT EXISTS` where possible), so that you can safely re-run:
+Useful env vars:
 
 ```bash
-make ch-init
+export INFERENCE_KAFKA_BOOTSTRAP_SERVERS=localhost:9094
+export INFERENCE_REQUESTS_TOPIC=inference-requests
+export INFERENCE_RESULTS_TOPIC=inference-results
+export INFERENCE_ALERTS_TOPIC=inference-alerts
+export MODEL_VERSION=brain-v1-stable
+export INFERENCE_ALERT_THRESHOLD=0.8
 ```
 
-This allows easy local resets, CI bootstrapping, and reproducible deployments.
+## ClickHouse Storage And TTL
+
+The dashboard settings page currently manages:
+
+- TTL for `rawframes`, `session_features`, `inference_results`, `inference_alerts`, `env_features`, `power_features`
+- S3-compatible cold-storage config written to `deploy/clickhouse/config/storage.xml`
+
+The server applies config changes with `SYSTEM RELOAD CONFIG`.
+
+## More Documentation
+
+- [Architecture](docs/architecture.md)
+- [Operational Status And Gaps](docs/issues.md)

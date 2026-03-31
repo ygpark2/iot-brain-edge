@@ -2,123 +2,195 @@
 
 ## Overview
 
-This repository implements an edge-to-cloud stream processing pipeline for sensor events. Data is collected at the edge, buffered/spooled locally, published to Kafka, processed by Apache Flink jobs, and persisted into ClickHouse. Inference is handled by a Python service that consumes inference requests from Kafka and publishes results/alerts back to Kafka. Alerts are delivered by a dedicated alert-service (Kafka → webhook).
+This repository implements a sensor-event pipeline with three distinct layers:
 
-The HTTP ingest path is supported via `services/ingestion-service`, which acts as an HTTP → Kafka bridge (no direct ClickHouse writes).
+1. Edge collection and forwarding
+2. Kafka-backed transport and optional stream processing
+3. ClickHouse persistence and operational dashboards
 
-## Repository Structure
+The current codebase supports both direct Kafka publishing and HTTP ingest from the edge. ClickHouse persistence is split between two services:
 
-- proto/ : shared contracts (protobuf)
-- core/ : shared domain + utilities
-- edge-agent/ : Pekko-based edge runtime (device state + stream pipeline)
-- services/ingestion-service/ : Pekko HTTP ingest API (HTTP → Kafka)
-- services/inference-service/ : Python model serving (Kafka consumer + REST)
-- services/alert-service/ : Kafka consumer → webhook
-- pipelines/flink-jobs/ : Apache Flink stream processing jobs
-- ui/dashboard/ : dashboard placeholder
-- deploy/ : infrastructure and deployment assets (Swarm, Docker, ClickHouse init)
-- docs/ : architecture and operational notes
+- `processor-service` writes raw `rawframes`
+- `ingestion-service` writes processed and derived topics
 
-## Components
+The dashboard is API-driven and does not expose direct browser connections to Kafka or ClickHouse.
+
+## Repository Map
+
+- `proto/`: shared event contracts
+- `core/`: shared runtime/domain utilities
+- `edge-agent/`: edge runtime and local spool
+- `services/ingestion-service/`: HTTP ingest + processed-topic ClickHouse writer
+- `services/processor-service/`: rawframe ClickHouse writer
+- `services/inference-service/`: Kafka consumer + REST inference service
+- `services/alert-service/`: alert webhook delivery
+- `pipelines/flink-jobs/`: optional stream processing jobs
+- `dashboard/`: SvelteKit admin UI and server APIs
+- `deploy/`: Swarm stack and ClickHouse initialization assets
+- `docs/`: architecture and operational status
+
+## Runtime Components
 
 ### Edge Agent
-- Collects data from sensors or mock sources
-- Spools data locally before forwarding
-- Publishes events to Kafka directly, or via HTTP to the ingestion-service
 
-### Ingestion Service (HTTP → Kafka)
-- Exposes `/v1/ingest`
-- Accepts raw JSON payloads and publishes to Kafka (`rawframes`)
-- Used when the edge cannot connect directly to Kafka
+`edge-agent` can run in two modes:
+
+- HTTP mode: sends to `ingestion-service /v1/ingest`
+- Kafka mode: publishes directly to Kafka
+
+Both modes use local disk spool buffering before forwarding.
 
 ### Kafka
-- Central event backbone
-- Topics include:
-  - rawframes (edge/ingest → raw events)
-  - rawframes-env / rawframes-power (env/power split ingest)
-  - rawframes-processed (Flink sessionizer output)
-  - session-features (Flink sessionizer output)
-  - features-base / features-health
-  - env-features / power-features (window aggregates)
-  - inference-requests (Flink inference-trigger output)
-  - inference-results / inference-alerts (inference-service output)
-  - inference-alerts-dlq (alert-service DLQ for permanent webhook errors)
 
-### Apache Flink Jobs
-- **Sessionizer**: `rawframes` → `session-features` + `rawframes-processed`
-- **Feature Extractors**: `session-features` → `features-*`
-  - base, health
-- **Env Aggregator**: `rawframes-env` → `env-features` (1m/5m window averages)
-- **Power Aggregator**: `rawframes-power` → `power-features` (1m/5m window averages)
-- **Inference Trigger**: `features-health` → `inference-requests`
-- **ClickHouse Ingest**: consumes `rawframes-processed`, `session-features`, `features-*`, `inference-results`, `inference-alerts` and writes to ClickHouse over HTTP
+Kafka is the transport backbone. Current topic families include:
+
+- `rawframes`
+- `rawframes-processed`
+- `session-features`
+- `features-base`
+- `features-health`
+- `features-power`
+- `features-env`
+- `inference-requests`
+- `inference-results`
+- `inference-alerts`
+- DLQ topics such as `rawframes-processed-dlq`, `session-features-dlq`, `inference-results-dlq`, `inference-alerts-dlq`
+
+Topic auto-creation is disabled in the Swarm stack. Topics must be created explicitly with `make create-kafka-topics`.
+
+### Processor Service
+
+`services/processor-service` consumes Kafka topic `rawframes` and writes JSON rows into ClickHouse table `brain.rawframes`.
+
+This is the raw event persistence path.
+
+### Ingestion Service
+
+`services/ingestion-service` has two responsibilities:
+
+1. Expose `/v1/ingest` and publish HTTP payloads into Kafka topic `rawframes`
+2. Consume processed/derived Kafka topics and write them into ClickHouse
+
+Current Kafka-to-ClickHouse topic mappings in `KafkaIngestConsumer.scala`:
+
+- `rawframes-processed` -> `brain.rawframes`
+- `session-features` -> `brain.session_features`
+- `inference-results` -> `brain.inference_results`
+- `inference-alerts` -> `brain.inference_alerts`
+- `env-features` -> `brain.env_features`
+- `power-features` -> `brain.power_features`
+
+This consumer includes retry and DLQ forwarding on permanent write failure.
+
+### Flink Jobs
+
+Flink jobs are present in the repo and can be run manually via `make run-flink` or `make run-flink-cluster`, but they are not part of the current default Swarm stack.
+
+The Flink project contains jobs for:
+
+- sessionizing
+- feature extraction
+- env/power aggregation
+- inference triggering
+- ClickHouse ingest
 
 ### Inference Service
-- Kafka consumer for `inference-requests`
-- Produces `inference-results` and `inference-alerts`
-- Also exposes `/v1/infer` for direct HTTP inference
-- Uses NVIDIA Triton (gRPC) for health-sensor inference when enabled
+
+`services/inference-service`:
+
+- consumes `inference-requests`
+- publishes `inference-results`
+- publishes `inference-alerts` when score exceeds threshold
+- exposes `/v1/infer`
+
+It supports a local fallback model and optional Triton-backed inference mode.
 
 ### Alert Service
-- Kafka consumer for `inference-alerts`
-- Sends webhooks to external systems
-- On permanent HTTP errors, publishes to `inference-alerts-dlq`
+
+`services/alert-service` consumes `inference-alerts` and forwards them to a webhook destination.
 
 ### ClickHouse
-- Time-series storage for raw frames, features, inference results, and alerts
 
-### Dashboard (placeholder)
-- UI placeholder for visualization
+ClickHouse stores:
 
-## Data Flow
+- raw frames
+- session features
+- inference results
+- inference alerts
+- env features
+- power features
+- device metadata
 
-### Kafka-based pipeline
+Cold-storage settings are driven by XML config in:
 
-Sensors/Mock → edge-agent (spool) → Kafka (`rawframes`)
-→ Flink Sessionizer → Kafka (`session-features`, `rawframes-processed`)
-→ Flink Feature Extractors → Kafka (`features-*`)
-→ Flink Inference Trigger → Kafka (`inference-requests`)
-→ inference-service → Kafka (`inference-results`, `inference-alerts`)
-→ Flink ClickHouse Ingest → ClickHouse
+- `deploy/clickhouse/config/storage.xml`
+- `deploy/swarm/clickhouse/config/storage.xml`
 
-Env/Power sensors → Kafka (`rawframes-env` / `rawframes-power`)
-→ Flink Env/Power Aggregator → Kafka (`env-features` / `power-features`)
-→ Flink ClickHouse Ingest → ClickHouse
+### Dashboard
 
-## Triton Inference (health sensors)
+The dashboard uses SvelteKit server APIs as the only backend integration layer.
 
-The inference-service can send health sensor feature vectors to NVIDIA Triton over gRPC. Triton returns motion/biomechanics inference used to assist user movement prediction/diagnosis. The service emits Kafka `inference-results` and `inference-alerts` from Triton outputs.
+Current behavior:
 
-### Key settings (env)
-- `TRITON_URL` (host:port) enables Triton mode
-- `TRITON_MODEL_NAME` / `TRITON_MODEL_VERSION`
-- `TRITON_INPUT_NAME` (default: `features`)
-- `TRITON_OUTPUT_SCORES` (default: `scores`)
-- `TRITON_OUTPUT_LABELS` (optional; if omitted, argmax over scores)
-- `TRITON_LABELS` (comma-separated label map)
-- `INFERENCE_SENSOR_TYPES` (default: `GRF,PLANTAR,SCANNER`)
+- metrics come from ClickHouse via `/api/dashboard/metrics`
+- devices are read/written via `/api/devices`
+- settings are read/written via `/api/settings`, `/api/settings/ttl`, `/api/settings/s3`
+- live inspector reads Kafka on the server
+- history inspector reads ClickHouse on the server
+
+The browser does not directly connect to Kafka or ClickHouse.
+
+## Data Flows
 
 ### HTTP ingest path
 
-HTTP → ingestion-service → Kafka (`rawframes`) → same Flink pipeline as above
+`edge-agent (HTTP mode)` -> `ingestion-service /v1/ingest` -> Kafka `rawframes`
 
-### Alerts
+### Direct Kafka path
 
-inference-service → Kafka (`inference-alerts`) → alert-service → Webhook
+`edge-agent (Kafka mode)` -> Kafka `rawframes`
 
-## Shared Contracts
+### Raw persistence path
 
-- proto/brain_events.proto defines the event schema
-- core/ provides shared domain models and utilities
+Kafka `rawframes` -> `processor-service` -> ClickHouse `brain.rawframes`
 
-## Deployment & Tooling
+### Processed persistence path
 
-- Docker Swarm stack: deploy/swarm/stack.yml
-- Local Docker compose: deploy/docker/docker-compose.yml
-- ClickHouse schema initialization: deploy/clickhouse/init.sh and deploy/clickhouse/schema/*.sql
-- Flink job config: deploy/flink/flink.yml
+Kafka processed topics -> `ingestion-service` consumer -> ClickHouse target tables
 
-## Notes
+### Optional analytics path
 
-- Operational hardening and design notes live in docs/issues.md
-- For reliability guarantees and DLQ handling, follow the checklist in docs/issues.md
+Kafka `rawframes` -> Flink jobs -> derived topics -> `inference-service` and/or `ingestion-service` consumer -> ClickHouse
+
+### Dashboard read path
+
+Browser -> SvelteKit route/API -> Kafka or ClickHouse
+
+## Deployment Shape
+
+The current default Swarm stack in `deploy/swarm/stack.yml` includes:
+
+- Kafka
+- Kafka UI
+- MinIO
+- ClickHouse
+- `processor-service`
+- `ingestion-service`
+- dashboard
+- notebook
+
+It does not currently include:
+
+- Flink JobManager/TaskManager
+- `inference-service`
+- `alert-service`
+
+Those components are manual or optional in the current repo state.
+
+## Operational Notes
+
+- `make stack-up` deploys the stack and runs ClickHouse schema init
+- `make create-kafka-topics` is required because Kafka auto-create is disabled
+- dashboard settings mutate `deploy/clickhouse/config/storage.xml` and call `SYSTEM RELOAD CONFIG`
+- dashboard live inspector uses server-side Kafka access
+- dashboard history inspector uses ClickHouse through server APIs
