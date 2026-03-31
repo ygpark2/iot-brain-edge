@@ -1,29 +1,70 @@
-<script>
-	import { onMount } from 'svelte';
+<script lang="ts">
+	import { onMount, onDestroy } from 'svelte';
 	import { Activity, Database, Zap, AlertTriangle } from 'lucide-svelte';
 	import Chart from 'chart.js/auto';
 
-	let throughputChart;
-	let chartCanvas;
+	let throughputChart: Chart;
+	let chartCanvas: HTMLCanvasElement;
+	let throughputInterval: ReturnType<typeof setInterval> | undefined;
+	let metricsInterval: ReturnType<typeof setInterval> | undefined;
+	let error = '';
 
-	const metrics = [
-		{ name: 'Total Events', value: '1.2M', icon: Activity, color: '#0ea5e9' },
-		{ name: 'Active Devices', value: '42', icon: Zap, color: '#f59e0b' },
-		{ name: 'DB Storage', value: '850 GB', icon: Database, color: '#10b981' },
-		{ name: 'Alerts (24h)', value: '12', icon: AlertTriangle, color: '#ef4444' }
+	let stats = {
+		totalEvents: 0,
+		activeDevices: 0,
+		storageBytes: 0,
+		alerts24h: 0
+	};
+
+	$: storageGB = `${(stats.storageBytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+
+	$: metrics = [
+		{ name: 'Total Events', value: stats.totalEvents.toLocaleString(), icon: Activity, color: '#0ea5e9' },
+		{ name: 'Active Devices', value: stats.activeDevices, icon: Zap, color: '#f59e0b' },
+		{ name: 'DB Storage', value: storageGB, icon: Database, color: '#10b981' },
+		{ name: 'Alerts (24h)', value: stats.alerts24h, icon: AlertTriangle, color: '#ef4444' }
 	];
 
+	async function loadMetrics() {
+		try {
+			const res = await fetch('/api/dashboard/metrics');
+			const json = await res.json();
+			if (!res.ok) throw new Error(json.error || 'Failed to load metrics');
+			stats = json;
+			error = '';
+		} catch (e) {
+			error = String(e);
+		}
+	}
+
+	async function fetchThroughput() {
+		try {
+			const res = await fetch('/api/throughput');
+			if (!res.ok) return 0;
+			const json = await res.json();
+			return json.count || 0;
+		} catch {
+			return 0;
+		}
+	}
+
 	onMount(() => {
+		if (!chartCanvas) return;
+
 		const ctx = chartCanvas.getContext('2d');
+		if (!ctx) return;
+
 		throughputChart = new Chart(ctx, {
 			type: 'line',
 			data: {
-				labels: Array.from({ length: 20 }, (_, i) => i + 's ago').reverse(),
+				labels: Array.from({ length: 30 }, () => ''),
 				datasets: [
 					{
 						label: 'Events / sec',
-						data: Array.from({ length: 20 }, () => Math.floor(Math.random() * 100) + 500),
+						data: Array.from({ length: 30 }, () => 0),
 						borderColor: '#0ea5e9',
+						borderWidth: 2,
+						pointRadius: 0,
 						tension: 0.4,
 						fill: true,
 						backgroundColor: 'rgba(14, 165, 233, 0.1)'
@@ -33,21 +74,39 @@
 			options: {
 				responsive: true,
 				maintainAspectRatio: false,
+				animation: { duration: 0 },
 				plugins: { legend: { display: false } },
 				scales: {
-					y: { beginAtZero: true, grid: { color: '#f1f5f9' } },
-					x: { grid: { display: false } }
+					y: {
+						beginAtZero: true,
+						suggestedMax: 10,
+						grid: { color: '#f1f5f9' },
+						ticks: { font: { size: 10 } }
+					},
+					x: { display: false }
 				}
 			}
 		});
 
-		const interval = setInterval(() => {
-			throughputChart.data.datasets[0].data.shift();
-			throughputChart.data.datasets[0].data.push(Math.floor(Math.random() * 100) + 500);
-			throughputChart.update();
-		}, 1000);
+		void loadMetrics();
+		metricsInterval = setInterval(() => {
+			void loadMetrics();
+		}, 10000);
 
-		return () => clearInterval(interval);
+		throughputInterval = setInterval(async () => {
+			const count = await fetchThroughput();
+			if (throughputChart) {
+				throughputChart.data.datasets[0].data.shift();
+				throughputChart.data.datasets[0].data.push(count);
+				throughputChart.update('none');
+			}
+		}, 1000);
+	});
+
+	onDestroy(() => {
+		if (throughputInterval) clearInterval(throughputInterval);
+		if (metricsInterval) clearInterval(metricsInterval);
+		if (throughputChart) throughputChart.destroy();
 	});
 </script>
 
@@ -71,10 +130,17 @@
 		{/each}
 	</div>
 
+	{#if error}
+		<p class="error-banner">{error}</p>
+	{/if}
+
 	<div class="chart-container">
 		<div class="chart-header">
 			<h3>Throughput (Events / sec)</h3>
-			<span class="live-indicator"><span class="dot"></span> LIVE</span>
+			<div class="live-indicator">
+				<div class="dot"></div>
+				<span>LIVE</span>
+			</div>
 		</div>
 		<div class="canvas-wrapper">
 			<canvas bind:this={chartCanvas}></canvas>
@@ -84,41 +150,20 @@
 	<section class="pipeline-status">
 		<h3>Service Health</h3>
 		<div class="status-list">
-			<div class="status-item">
-				<span class="service">Edge Agent</span>
-				<span class="badge online">Online</span>
-			</div>
-			<div class="status-item">
-				<span class="service">Kafka Broker</span>
-				<span class="badge online">Online</span>
-			</div>
-			<div class="status-item">
-				<span class="service">Flink JobManager</span>
-				<span class="badge online">Online</span>
-			</div>
-			<div class="status-item">
-				<span class="service">Inference Service</span>
-				<span class="badge offline">Offline</span>
-			</div>
+			{#each ['Edge Agent', 'Kafka Broker', 'Flink Cluster', 'Inference Service'] as service}
+				<div class="status-item">
+					<span class="service">{service}</span>
+					<span class="badge online">Online</span>
+				</div>
+			{/each}
 		</div>
 	</section>
 </div>
 
 <style>
-	header {
-		margin-bottom: 32px;
-	}
-
-	header h1 {
-		margin: 0;
-		font-size: 1.875rem;
-		color: #0f172a;
-	}
-
-	header p {
-		margin: 4px 0 0 0;
-		color: #64748b;
-	}
+	header { margin-bottom: 32px; }
+	header h1 { margin: 0; font-size: 1.875rem; color: #0f172a; font-weight: 800; }
+	header p { margin: 4px 0 0 0; color: #64748b; }
 
 	.metrics-grid {
 		display: grid;
@@ -134,126 +179,53 @@
 		display: flex;
 		align-items: center;
 		gap: 20px;
-		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+		border: 1px solid #f1f5f9;
+		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 	}
 
-	.metric-icon {
-		padding: 12px;
-		border-radius: 10px;
-	}
-
-	.metric-info {
-		display: flex;
-		flex-direction: column;
-	}
-
-	.metric-info .label {
-		font-size: 0.875rem;
-		color: #64748b;
-	}
-
-	.metric-info .value {
-		font-size: 1.5rem;
-		font-weight: 600;
-		color: #0f172a;
-	}
+	.metric-icon { padding: 12px; border-radius: 10px; display: flex; align-items: center; justify-content: center; }
+	.metric-info { display: flex; flex-direction: column; }
+	.metric-info .label { font-size: 0.875rem; color: #64748b; font-weight: 500; }
+	.metric-info .value { font-size: 1.5rem; font-weight: 700; color: #0f172a; }
 
 	.chart-container {
 		background: white;
 		padding: 24px;
-		border-radius: 12px;
+		border-radius: 16px;
+		border: 1px solid #f1f5f9;
 		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 		margin-bottom: 32px;
 	}
 
-	.chart-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		margin-bottom: 20px;
-	}
-
-	.chart-header h3 {
-		margin: 0;
-		font-size: 1.125rem;
-	}
+	.chart-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
+	.chart-header h3 { margin: 0; font-size: 1.125rem; font-weight: 700; color: #1e293b; }
 
 	.live-indicator {
 		display: flex;
 		align-items: center;
-		gap: 6px;
-		font-size: 0.75rem;
-		font-weight: 600;
-		color: #ef4444;
-	}
-
-	.dot {
-		width: 8px;
-		height: 8px;
-		background-color: #ef4444;
-		border-radius: 50%;
-		animation: pulse 2s infinite;
-	}
-
-	@keyframes pulse {
-		0% {
-			transform: scale(0.95);
-			box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
-		}
-		70% {
-			transform: scale(1);
-			box-shadow: 0 0 0 6px rgba(239, 68, 68, 0);
-		}
-		100% {
-			transform: scale(0.95);
-			box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
-		}
-	}
-
-	.canvas-wrapper {
-		height: 300px;
-	}
-
-	.pipeline-status {
-		background: white;
-		padding: 24px;
-		border-radius: 12px;
-		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-	}
-
-	.status-list {
-		display: flex;
-		flex-direction: column;
-		gap: 16px;
-	}
-
-	.status-item {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		padding-bottom: 12px;
-		border-bottom: 1px solid #f1f5f9;
-	}
-
-	.status-item:last-child {
-		border-bottom: none;
-		padding-bottom: 0;
-	}
-
-	.badge {
+		gap: 8px;
+		background: #ecfdf5;
 		padding: 4px 12px;
 		border-radius: 9999px;
+		color: #059669;
 		font-size: 0.75rem;
-		font-weight: 600;
+		font-weight: 700;
 	}
 
-	.badge.online {
-		background-color: #dcfce7;
-		color: #166534;
-	}
+	.dot { width: 8px; height: 8px; background-color: #10b981; border-radius: 50%; }
 
-	.badge.offline {
-		background-color: #fee2e2;
-		color: #991b1b;
+	.canvas-wrapper { height: 320px; width: 100%; position: relative; }
+	canvas { width: 100% !important; height: 100% !important; }
+
+	.pipeline-status { background: white; padding: 24px; border-radius: 16px; border: 1px solid #f1f5f9; }
+	.pipeline-status h3 { margin-top: 0; margin-bottom: 20px; font-size: 1.125rem; font-weight: 700; }
+	.status-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
+	.status-item { 
+		display: flex; justify-content: space-between; align-items: center; 
+		padding: 12px 16px; background: #f8fafc; border-radius: 8px;
 	}
+	.service { font-weight: 600; color: #475569; font-size: 0.875rem; }
+	.badge { padding: 4px 10px; border-radius: 6px; font-size: 0.7rem; font-weight: 800; text-transform: uppercase; }
+	.badge.online { background-color: #dcfce7; color: #166534; }
+	.error-banner { color: #b91c1c; font-size: 0.875rem; margin: 0 0 24px 0; }
 </style>

@@ -24,6 +24,34 @@
 - **docs/**: 아키텍처 및 운영 노트
 - **pipelines/flink-jobs/**: Apache Flink 데이터 처리 잡 (**Pure Scala** 기반)
 
+## 관리 대시보드 화면
+
+관리 대시보드는 운영 모니터링, 디바이스 관리, 메시지 디버깅, 시스템 설정을 위한 화면을 제공합니다.
+
+### Dashboard
+
+![Dashboard Overview](docs/images/dashboard.png)
+
+### Devices
+
+![Devices](docs/images/devices.png)
+
+### Message Inspector
+
+![Message Inspector](docs/images/message_inspector.png)
+
+### Pipeline Topology
+
+![Pipeline Topology](docs/images/topology.png)
+
+### Trace Timeline
+
+![Trace Timeline](docs/images/trace.png)
+
+### Settings
+
+![Settings](docs/images/settings.png)
+
 ## 시스템 아키텍처
 
 ### 전체 구조

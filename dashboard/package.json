@@ -6,8 +6,8 @@
     "dev": "vite dev",
     "build": "vite build",
     "preview": "vite preview",
-    "check": "svelte-kit sync && svelte-check --accelerated",
-    "check:watch": "svelte-kit sync && svelte-check --accelerated --watch"
+    "check": "svelte-kit sync && svelte-check",
+    "check:watch": "svelte-kit sync && svelte-check --watch"
   },
   "devDependencies": {
     "@sveltejs/adapter-auto": "^3.0.0",
@@ -25,6 +25,7 @@
     "chartjs-adapter-date-fns": "^3.0.0",
     "clsx": "^2.1.0",
     "date-fns": "^3.3.1",
+    "kafkajs": "^2.2.4",
     "lucide-svelte": "^0.321.0",
     "tailwind-merge": "^2.2.1"
   }

@@ -14,10 +14,61 @@ Open-source "Brain" platform that connects sensor hardware (GRF / plantar pressu
   - **Pipeline Topology**: Interactive map of service connectivity and data flow.
   - **Message Inspector**: Real-time Kafka message sampling and Protobuf-to-JSON decoding.
   - **Trace Timeline**: End-to-end journey tracking for specific session IDs.
-- **pipelines/flink-jobs/**: Apache Flink data processing jobs (**Pure Scala**)
+  - **pipelines/flink-jobs/**: Apache Flink data processing jobs (**Pure Scala**)
 
-## System Architecture
+  ## Dashboard & Analytics
 
+  The Brain Edge Dashboard provides a comprehensive interface for system monitoring, data lifecycle management, and advanced analytics.
+
+  ### 1. Pipeline Topology
+  Real-time visualization of the entire data pipeline, mapping services to specific Kafka topics.
+  - **Visual Flow**: Animated particles show active data streams.
+  - **Stage Mapping**: Clear separation between Ingestion, Processing (Flink), and Consumption (Inference/ClickHouse).
+  - **Back-loops**: Precise routing for feedback loops like inference alerts.
+
+  > ![Pipeline Topology Placeholder](docs/images/topology.png)
+  > *Note: End-to-end data flow from Edge Agent to ClickHouse via Kafka topics.*
+
+  ### 2. Data Archiving (S3 & TTL)
+  Manage your data retention policy and cold storage settings directly from the UI.
+  - **Tiered Storage**: Move aged data (e.g., > 30 days) from local hot storage to AWS S3 / MinIO.
+  - **Dynamic Config**: Update S3 endpoints and credentials without restarting ClickHouse.
+  - **Retention Control**: Set per-table TTL (Time-To-Live) for automatic archiving.
+
+  ### 3. Spark Notebook Integration
+  Integrated Jupyter environment for deep-dive analysis using PySpark.
+  - **Direct Access**: One-click jump to Spark Notebooks with pre-configured ClickHouse connectors.
+  - **Pre-built Templates**: Sample notebooks for querying raw frames and session features.
+
+  ### 4. Admin Dashboard Screenshots
+  The dashboard includes dedicated views for operations, debugging, and system control.
+
+  **Overview Dashboard**
+
+  ![Dashboard Overview](docs/images/dashboard.png)
+
+  **Devices**
+
+  ![Devices](docs/images/devices.png)
+
+  **Message Inspector**
+
+  ![Message Inspector](docs/images/message_inspector.png)
+
+  **Pipeline Topology**
+
+  ![Pipeline Topology](docs/images/topology.png)
+
+  **Trace Timeline**
+
+  ![Trace Timeline](docs/images/trace.png)
+
+  **Settings**
+
+  ![Settings](docs/images/settings.png)
+
+  ## System Architecture
+  ...
 ### Overview
 
 ```
