@@ -4,27 +4,45 @@ import org.apache.pekko.actor.typed.ActorSystem
 import org.apache.pekko.http.scaladsl.Http
 import org.apache.pekko.http.scaladsl.server.Directives._
 import org.apache.pekko.http.scaladsl.model.StatusCodes
+import spray.json.DefaultJsonProtocol._
 import spray.json._
 
-import scala.concurrent.{ExecutionContext, Future}
-import scala.io.StdIn
+import scala.concurrent.Future
 import scala.util.{Failure, Success}
 
-object Main extends DefaultJsonProtocol {
+case class Health(status: String)
+object Health {
+  implicit val format: RootJsonFormat[Health] = jsonFormat1(Health.apply)
+}
 
-  final case class Health(status: String)
-  implicit val healthFormat: RootJsonFormat[Health] = jsonFormat1(Health.apply)
-
+object Main {
   def main(args: Array[String]): Unit = {
-    implicit val system: ActorSystem[Nothing] =
-      ActorSystem(org.apache.pekko.actor.typed.scaladsl.Behaviors.empty, "ingestion-service")
-    implicit val ec: ExecutionContext = system.executionContext
-
+    implicit val system: ActorSystem[Nothing] = ActorSystem(org.apache.pekko.actor.typed.scaladsl.Behaviors.empty, "ingestion-service")
+    implicit val ec = system.executionContext
     val http = Http()
 
-    val kafkaBootstrap = sys.env.getOrElse("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+    // Environment variables with Docker-friendly defaults
+    val kafkaBootstrap = sys.env.getOrElse("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
     val kafkaTopic = sys.env.getOrElse("KAFKA_TOPIC", "rawframes")
+    val dlqTopic = sys.env.getOrElse("KAFKA_DLQ_TOPIC", "ingest-dlq")
+    
+    val chUrl = sys.env.getOrElse("CLICKHOUSE_HTTP_URL", "http://clickhouse:8123")
+    val chUser = sys.env.getOrElse("CLICKHOUSE_USER", "brain")
+    val chPass = sys.env.getOrElse("CLICKHOUSE_PASSWORD", "brain")
+
     val kafkaPublisher = new KafkaPublisher(kafkaBootstrap, kafkaTopic)
+    val chWriter = new ClickHouseWriter(chUrl, chUser, chPass)
+    val dlqProducer = new DLQProducer(kafkaBootstrap)
+
+    val kafkaConsumer = new KafkaIngestConsumer(
+      kafkaBootstrap,
+      "ingestion-service-group",
+      Set("rawframes-processed", "session-features", "inference-results", "inference-alerts", "env-features", "power-features"),
+      chWriter,
+      dlqProducer,
+      dlqTopic
+    )
+    val killSwitch = kafkaConsumer.run()
 
     val route =
       path("health") {
@@ -35,21 +53,19 @@ object Main extends DefaultJsonProtocol {
         path("v1" / "ingest") {
           post {
             entity(as[String]) { body =>
-              system.log.info("ingest received bytes={}", body.length: java.lang.Integer)
-
+              // Revert to Kafka Publish (Production Path)
               onComplete(kafkaPublisher.send(body)) {
                 case Success(_) =>
                   complete("""{"accepted":true}""")
                 case Failure(e) =>
                   system.log.error("HTTP ingest -> Kafka failed: {}", e.getMessage)
-                  complete(StatusCodes.InternalServerError, """{"accepted":false}""")
+                  complete(StatusCodes.InternalServerError, s"""{"accepted":false, "error":"${e.getMessage}"}""")
               }
             }
           }
         }
 
-    val bindingF =
-      http.newServerAt("0.0.0.0", 8082).bind(route)
+    val bindingF = http.newServerAt("0.0.0.0", 8082).bind(route)
 
     bindingF.onComplete {
       case Success(binding) =>
@@ -59,17 +75,11 @@ object Main extends DefaultJsonProtocol {
         system.terminate()
     }
 
-    system.log.info("Press ENTER to stop ingestion-service...")
-    StdIn.readLine()
-
-    system.log.info("Shutting down (kafka -> http)...")
-
-    val shutdownF: Future[Unit] =
-      Future {
-        kafkaPublisher.close()
-      }
-
-    shutdownF.onComplete { _ =>
+    sys.addShutdownHook {
+      killSwitch.shutdown()
+      chWriter.close()
+      kafkaPublisher.close()
+      dlqProducer.close()
       bindingF.flatMap(_.unbind()).onComplete(_ => system.terminate())
     }
   }

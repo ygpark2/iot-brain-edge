@@ -1,0 +1,26 @@
+<clickhouse>
+    <storage_configuration>
+        <disks>
+            <s3>
+                <type>s3</type>
+                <endpoint>http://minio:9000/brain/clickhouse/</endpoint>
+                <access_key_id>minio</access_key_id>
+                <secret_access_key>minio12345</secret_access_key>
+                <region></region>
+            </s3>
+        </disks>
+        <policies>
+            <tiered>
+                <volumes>
+                    <default>
+                        <disk>default</disk>
+                    </default>
+                    <s3_tiered>
+                        <disk>s3</disk>
+                    </s3_tiered>
+                </volumes>
+                <move_factor>0.2</move_factor>
+            </tiered>
+        </policies>
+    </storage_configuration>
+</clickhouse>

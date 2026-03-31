@@ -11,8 +11,8 @@ lazy val Versions = new {
   val logback = "1.5.25"
   val slf4j = "2.0.17"
   val scalapb = "0.11.20"
-  val flink = "2.0.0"
-  val flinkKafka = "4.0.1-2.0"
+  val flink = "2.2.0" // Latest stable Scala-free version
+  val flinkKafka = "4.0.1-2.0" // Dedicated connector for Flink 2.2
   val sprayJson = "1.3.6"
 }
 
@@ -74,8 +74,11 @@ lazy val flinkJobs = (project in file("pipelines/flink-jobs"))
     run / fork := true,
     assembly / assemblyJarName := "flink-jobs-assembly.jar",
     assembly / assemblyMergeStrategy := {
+      case PathList("META-INF", "versions", _*) => MergeStrategy.first
       case PathList("META-INF", _*) => MergeStrategy.discard
       case "reference.conf" => MergeStrategy.concat
+      case "version.conf" => MergeStrategy.concat
+      case x if x.endsWith(".tasty") || x.endsWith(".scala") => MergeStrategy.first
       case x => MergeStrategy.first
     },
     libraryDependencies ++= Seq(
@@ -87,7 +90,7 @@ lazy val flinkJobs = (project in file("pipelines/flink-jobs"))
       "org.apache.flink" % "flink-json" % Versions.flink,
       "org.apache.flink" % "flink-runtime-web" % Versions.flink % "runtime",
       "com.thesamet.scalapb" %% "scalapb-runtime" % Versions.scalapb,
-      "io.spray" %% "spray-json" % Versions.sprayJson,
+      "io.spray" %% "spray-json" % "1.3.6",
       "io.github.classgraph" % "classgraph" % "4.8.174",
       "org.scalatest" %% "scalatest" % "3.2.19" % Test,
       "org.scalatestplus" %% "mockito-5-12" % "3.2.19.0" % Test
@@ -101,6 +104,14 @@ lazy val ingestionService = (project in file("services/ingestion-service"))
   .settings(commonSettings)
   .settings(
     name := "ingestion-service",
+    assembly / assemblyJarName := "ingestion-service-assembly.jar",
+    assembly / assemblyMergeStrategy := {
+      case PathList("META-INF", "versions", _*) => MergeStrategy.first
+      case PathList("META-INF", _*) => MergeStrategy.discard
+      case "reference.conf" => MergeStrategy.concat
+      case "version.conf" => MergeStrategy.concat
+      case x => MergeStrategy.first
+    },
     libraryDependencies ++= Seq(
       "org.apache.pekko" %% "pekko-actor-typed" % Versions.pekko,
       "org.apache.pekko" %% "pekko-stream" % Versions.pekko,
@@ -124,5 +135,28 @@ lazy val alertService = (project in file("services/alert-service"))
     )
   )
 
+lazy val processorService = (project in file("services/processor-service"))
+  .dependsOn(core)
+  .settings(commonSettings)
+  .settings(
+    name := "processor-service",
+    assembly / assemblyJarName := "processor-service-assembly.jar",
+    assembly / assemblyMergeStrategy := {
+      case PathList("META-INF", "versions", _*) => MergeStrategy.first
+      case PathList("META-INF", _*) => MergeStrategy.discard
+      case "reference.conf" => MergeStrategy.concat
+      case "version.conf" => MergeStrategy.concat
+      case x => MergeStrategy.first
+    },
+    libraryDependencies ++= Seq(
+      "org.apache.pekko" %% "pekko-actor-typed" % Versions.pekko,
+      "org.apache.pekko" %% "pekko-stream" % Versions.pekko,
+      "org.apache.pekko" %% "pekko-connectors-kafka" % Versions.pekkoKafka,
+      "org.apache.pekko" %% "pekko-http" % Versions.pekkoHttp,
+      "org.apache.pekko" %% "pekko-http-spray-json" % Versions.pekkoHttp,
+    )
+  )
+
 addCommandAlias("run-edge", ";project edgeAgent;run")
 addCommandAlias("run-ingest", ";project ingestionService;run")
+addCommandAlias("run-processor", ";project processorService;run")
