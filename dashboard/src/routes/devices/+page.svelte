@@ -1,17 +1,39 @@
-<script>
+<script lang="ts">
+	import { onMount } from 'svelte';
 	import { Plus, Search, Edit2, Trash2, X, Check } from 'lucide-svelte';
-	import { enhance } from '$app/forms';
 
-	export let data;
-	$: devices = data.devices;
+	type Device = {
+		id: string;
+		location: string;
+		sensors: string;
+		status: string;
+		updatedAt?: string;
+	};
 
+	let devices: Device[] = [];
+	let error = '';
 	let isAdding = false;
-	let editingId = null;
+	let editingId: string | null = null;
 	let searchQuery = '';
-
 	let formValues = { id: '', location: '', sensors: '', status: 'Online' };
 
-	function startEdit(device) {
+	async function loadDevices() {
+		try {
+			const res = await fetch('/api/devices');
+			const json = await res.json();
+			if (!res.ok) throw new Error(json.error || 'Failed to load devices');
+			devices = json.devices || [];
+			error = '';
+		} catch (e) {
+			error = String(e);
+		}
+	}
+
+	onMount(() => {
+		void loadDevices();
+	});
+
+	function startEdit(device: Device) {
 		editingId = device.id;
 		formValues = { ...device };
 		isAdding = true;
@@ -21,6 +43,37 @@
 		formValues = { id: '', location: '', sensors: '', status: 'Online' };
 		isAdding = false;
 		editingId = null;
+	}
+
+	async function submitDevice() {
+		try {
+			const res = await fetch('/api/devices', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(formValues)
+			});
+			const json = await res.json();
+			if (!res.ok || !json.success) throw new Error(json.error || 'Failed to save device');
+			resetForm();
+			await loadDevices();
+		} catch (e) {
+			error = String(e);
+		}
+	}
+
+	async function deleteDevice(id: string) {
+		try {
+			const res = await fetch('/api/devices', {
+				method: 'DELETE',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ id })
+			});
+			const json = await res.json();
+			if (!res.ok || !json.success) throw new Error(json.error || 'Failed to delete device');
+			await loadDevices();
+		} catch (e) {
+			error = String(e);
+		}
 	}
 
 	$: filteredDevices = devices.filter(
@@ -48,6 +101,10 @@
 		</div>
 	</div>
 
+	{#if error}
+		<p class="error-banner">{error}</p>
+	{/if}
+
 	<div class="table-container">
 		<table>
 			<thead>
@@ -74,16 +131,9 @@
 								<button class="btn-icon" on:click={() => startEdit(device)} title="Edit">
 									<Edit2 size={16} />
 								</button>
-								<form method="POST" action="?/delete" use:enhance={() => {
-									return async ({ result }) => {
-										if (result.type === 'success') resetForm();
-									};
-								}}>
-									<input type="hidden" name="id" value={device.id} />
-									<button type="submit" class="btn-icon delete" title="Delete">
-										<Trash2 size={16} />
-									</button>
-								</form>
+								<button class="btn-icon delete" on:click={() => deleteDevice(device.id)} title="Delete">
+									<Trash2 size={16} />
+								</button>
 							</div>
 						</td>
 					</tr>
@@ -99,11 +149,7 @@
 					<h3>{editingId ? 'Edit Device' : 'Register New Device'}</h3>
 					<button class="btn-close" on:click={resetForm}><X size={20} /></button>
 				</div>
-				<form method="POST" action="?/upsert" use:enhance={() => {
-					return async ({ result }) => {
-						if (result.type === 'success') resetForm();
-					};
-				}}>
+				<form on:submit|preventDefault={submitDevice}>
 					<div class="form-group">
 						<label for="deviceId">Device ID</label>
 						<input
@@ -257,6 +303,12 @@
 
 	.status-dot.offline {
 		background-color: #94a3b8;
+	}
+
+	.error-banner {
+		color: #b91c1c;
+		font-size: 0.875rem;
+		margin: 0 0 16px 0;
 	}
 
 	.actions {
