@@ -28,10 +28,10 @@ __pycache__/
 node_modules/
 .next/
 dist/
+dashboard/.svelte-kit/
 
 # Data
 .data/
 
 examples/
 aws.doc.md
-

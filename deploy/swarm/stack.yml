@@ -65,6 +65,22 @@ services:
         constraints:
           - node.role == manager
 
+  minio:
+    image: minio/minio:RELEASE.2024-10-13T13-34-11Z
+    entrypoint: sh -c "mkdir -p /data/brain && /usr/bin/docker-entrypoint.sh server /data --console-address ':9001'"
+    networks:
+      - brain-net
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio12345
+    volumes:
+      - minio_data:/data
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+
   clickhouse:
     image: clickhouse/clickhouse-server:latest-alpine
     networks:
@@ -72,6 +88,7 @@ services:
     volumes:
       - clickhouse_data:/var/lib/clickhouse
       - clickhouse_logs:/var/log/clickhouse-server
+      - ./clickhouse/config/storage.xml:/etc/clickhouse-server/config.d/storage.xml
     environment:
       CLICKHOUSE_DB: brain
       CLICKHOUSE_USER: brain
@@ -82,58 +99,121 @@ services:
         published: 8123
         protocol: tcp
         mode: host
-      - target: 9000
-        published: 9000
-        protocol: tcp
-        mode: host
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
     deploy:
       replicas: 1
+      update_config:
+        parallelism: 1
+        delay: 10s
+        order: start-first
+      resources:
+        limits:
+          cpus: '1'
+          memory: 2G
       placement:
         constraints:
           - node.role == manager
 
-  flink-jobmanager:
-    image: flink:latest
-    command: jobmanager
+  processor-service:
+    image: ainsoft/brain-processor:latest
     networks:
       - brain-net
     environment:
-      FLINK_PROPERTIES: |
-        jobmanager.rpc.address: flink-jobmanager
-        parallelism.default: 2
-    ports:
-      - target: 8081
-        published: 8081
-        protocol: tcp
-        mode: host
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - KAFKA_INPUT_TOPIC=rawframes
+      - KAFKA_OUTPUT_RAW_TOPIC=rawframes-processed
+      - KAFKA_OUTPUT_FEATURES_TOPIC=session-features
     deploy:
       replicas: 1
-      placement:
-        constraints:
-          - node.role == manager
-
-  flink-taskmanager:
-    image: flink:latest
-    command: taskmanager
-    networks:
-      - brain-net
+      restart_policy:
+        condition: on-failure
     depends_on:
-      - flink-jobmanager
+      - kafka
+
+  notebook:
+    image: jupyter/pyspark-notebook:latest
+    networks:
+      - brain-net
     environment:
-      FLINK_PROPERTIES: |
-        jobmanager.rpc.address: flink-jobmanager
-        taskmanager.numberOfTaskSlots: 5
+      - JUPYTER_TOKEN=brain
+      - JUPYTER_ENABLE_LAB=yes
+    volumes:
+      - notebooks-data:/home/jovyan/work
+    ports:
+      - target: 8888
+        published: 8888
+        protocol: tcp
+        mode: host
     deploy:
       replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+
+  ingestion-service:
+    image: ainsoft/brain-ingestion:latest
+    networks:
+      - brain-net
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - CLICKHOUSE_HTTP_URL=http://clickhouse:8123
+      - CLICKHOUSE_USER=brain
+      - CLICKHOUSE_PASSWORD=brain
+    ports:
+      - target: 8082
+        published: 8082
+        protocol: tcp
+        mode: host
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8082/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    deploy:
+      replicas: 2
+      update_config:
+        parallelism: 1
+        delay: 30s
+        order: start-first
+    depends_on:
+      - kafka
+      - clickhouse
+
+  dashboard:
+    image: node:24-alpine
+    working_dir: /app
+    networks:
+      - brain-net
+    volumes:
+      - ../../dashboard:/app
+
+    environment:
+      - NODE_ENV=development
+      - DOCKER_ENV=true
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    ports:
+      - target: 5173
+        published: 5173
+        protocol: tcp
+        mode: host
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
 
 networks:
   brain-net:
     external: true
-    # driver: overlay
-    # attachable: true
 
 volumes:
   kafka-data:
   clickhouse_data:
   clickhouse_logs:
+  notebooks-data:
+  minio_data:
 

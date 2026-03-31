@@ -1,13 +1,14 @@
 <script>
-	import { DeviceWatch, Activity, Settings, LayoutDashboard, Share2, SearchCode } from 'lucide-svelte';
+	import { Monitor, Activity, Settings, LayoutDashboard, Share2, SearchCode, LineChart } from 'lucide-svelte';
 	import { page } from '$app/stores';
 
 	const navItems = [
 		{ name: 'Dashboard', href: '/', icon: LayoutDashboard },
-		{ name: 'Devices', href: '/devices', icon: DeviceWatch },
+		{ name: 'Devices', href: '/devices', icon: Monitor },
 		{ name: 'Message Inspector', href: '/streams', icon: Activity },
 		{ name: 'Pipeline Topology', href: '/topology', icon: Share2 },
 		{ name: 'Trace Timeline', href: '/trace', icon: SearchCode },
+		{ name: 'Analytics', href: 'http://localhost:8888?token=brain', icon: LineChart, target: '_blank' },
 		{ name: 'Settings', href: '/settings', icon: Settings }
 	];
 </script>
@@ -20,7 +21,7 @@
 		<ul class="nav-links">
 			{#each navItems as item}
 				<li>
-					<a href={item.href} class:active={$page.url.pathname === item.href}>
+					<a href={item.href} class:active={$page.url.pathname === item.href} target={item.target || '_self'}>
 						<svelte:component this={item.icon} size={20} />
 						<span>{item.name}</span>
 					</a>

@@ -1,6 +1,6 @@
-
 CREATE TABLE IF NOT EXISTS brain.env_features
 (
+  event_id String DEFAULT hex(sipHash64(concat(device_id, sensor_type, toString(inserted_at)))),
   device_id String,
   sensor_type String,
   window_start_ms Int64,
@@ -12,4 +12,6 @@ CREATE TABLE IF NOT EXISTS brain.env_features
   inserted_at DateTime64(3) DEFAULT now64(3)
 )
 ENGINE = ReplacingMergeTree(inserted_at)
-ORDER BY (device_id, sensor_type, window_start_ms, feature_schema_version);
+ORDER BY (event_id)
+TTL inserted_at + INTERVAL 30 DAY TO VOLUME 's3_tiered'
+SETTINGS storage_policy = 'tiered';

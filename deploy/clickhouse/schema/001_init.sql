@@ -1,4 +1,3 @@
-
 CREATE DATABASE IF NOT EXISTS brain;
 
 CREATE TABLE IF NOT EXISTS brain.rawframes
@@ -9,6 +8,6 @@ CREATE TABLE IF NOT EXISTS brain.rawframes
   payload String
 )
 ENGINE = ReplacingMergeTree(ts)
-ORDER BY (event_id);
-
--- 조회 성능을 위해 ts 기반 보조 인덱스 느낌으로 쓰려면 projection 고려 가능 (추후)
+ORDER BY (event_id)
+TTL ts + INTERVAL 30 DAY TO VOLUME 's3_tiered'
+SETTINGS storage_policy = 'tiered';
